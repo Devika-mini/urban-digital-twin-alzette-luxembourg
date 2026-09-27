@@ -1,0 +1,7 @@
+river: Alzette
+km_start: 46.3
+km_end: 48.3
+aoi_method: bbox          # later: buffer, hq_extreme_extent, ...
+bbox_margin_m: 300
+crs: EPSG:2169
+landcover_year: 2024

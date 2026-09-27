@@ -1,0 +1,40 @@
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+ 
+# Python cache
+__pycache__/
+*.py[cod]
+ 
+# Jupyter
+.ipynb_checkpoints/
+ 
+# IDEs
+.idea/
+.vscode/
+ 
+# OS files
+.DS_Store
+Thumbs.db
+ 
+# Claude Code local (personal) settings
+.claude/settings.local.json
+ 
+# Zip files that might be downloaded at some point
+*.zip
+ 
+# Geospatial side files (GeoPackage locks, GDAL/QGIS helpers)
+*.gpkg-wal
+*.gpkg-shm
+*.aux.xml
+*.qgs~
+*.qgz~
+ 
+# Nothing in these folders
+data/
+results/
