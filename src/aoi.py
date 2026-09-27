@@ -76,3 +76,13 @@ def build_aoi(
     )
 
     return aoi, selected
+
+
+DEFAULT_AOI_PATH: Path = REPO_ROOT / "data/processed/aoi.gpkg"
+
+
+def load_aoi(path: str | Path = DEFAULT_AOI_PATH) -> gpd.GeoDataFrame:
+    # All downstream steps must read the AOI from disk, not rebuild it, so a
+    # better AOI (e.g. a river buffer) can later replace the rectangle here
+    # without touching clip/intersect code.
+    return pyogrio.read_dataframe(path, layer="aoi")
