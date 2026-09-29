@@ -5,3 +5,8 @@ aoi_method: bbox          # later: buffer, hq_extreme_extent, ...
 bbox_margin_m: 300
 crs: EPSG:2169
 landcover_year: 2024
+
+# A2 §2.1 "share_in" exposure rule: min fraction of a building's footprint area inside HQ100
+share_in_threshold: 0.5
+# A2 Step 1: max distance (m) to snap an unmatched address point to its nearest building
+address_snap_max_m: 5

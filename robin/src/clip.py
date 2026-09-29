@@ -82,8 +82,13 @@ def load_clipped(
             return pyogrio.read_dataframe(out_path, layer=out_layer)
 
     # Pre-filter by bounding box before doing anything else; this is what
-    # keeps country-wide datasets like the land cover GDB fast to read.
-    bbox: tuple[float, float, float, float] = tuple(aoi.total_bounds)
+    # keeps country-wide datasets like the land cover GDB fast to read. The
+    # bbox must be in the *source's* CRS, not the AOI's - e.g. OSM data is
+    # EPSG:4326 (degrees), so an EPSG:2169 (meters) bbox would silently match
+    # nothing instead of erroring.
+    source_crs = pyogrio.read_info(path, layer=layer)["crs"]
+    aoi_in_source_crs = aoi.to_crs(source_crs) if source_crs else aoi
+    bbox: tuple[float, float, float, float] = tuple(aoi_in_source_crs.total_bounds)
     gdf: gpd.GeoDataFrame = pyogrio.read_dataframe(path, layer=layer, bbox=bbox)
 
     if gdf.crs is None or gdf.crs.to_string() != crs:
