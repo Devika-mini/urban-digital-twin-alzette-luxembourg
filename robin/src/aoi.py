@@ -86,3 +86,9 @@ def load_aoi(path: str | Path = DEFAULT_AOI_PATH) -> gpd.GeoDataFrame:
     # better AOI (e.g. a river buffer) can later replace the rectangle here
     # without touching clip/intersect code.
     return pyogrio.read_dataframe(path, layer="aoi")
+
+
+def load_river_points(path: str | Path = DEFAULT_AOI_PATH) -> gpd.GeoDataFrame:
+    # The river-kilometrage points used to build the AOI, saved alongside it
+    # by scripts/build_aoi.py - reused for the Step 4 map (§5).
+    return pyogrio.read_dataframe(path, layer="river_points")

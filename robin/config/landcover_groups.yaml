@@ -1,0 +1,15 @@
+# Maps every LIS-L land cover class (LC2024 code) to one of a few readable
+# groups for the A1 flood-zone breakdown. Class names/codes are from the
+# LandCover_legend table inside the land cover GDB (matches the LIS-L
+# documentation PDF). Every code must map to exactly one group.
+#
+# Draft grouping proposed for task A1; confirmed by Robin.
+10: Built/sealed        # Buildings
+20: Built/sealed        # Other constructed areas
+30: Bare soil           # Bare soil
+60: Water                # Water
+70: Trees/shrubs         # Trees
+80: Trees/shrubs         # Bushes
+91: Grass/open green     # Permanent herbaceous vegetation
+92: Agriculture          # Seasonal herbaceous vegetation
+93: Agriculture          # Vineyards
