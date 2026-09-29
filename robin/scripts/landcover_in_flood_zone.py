@@ -121,6 +121,41 @@ def main() -> None:
         f"(diff {diff:+.2f} m2, {100 * diff / flooded_area:+.4f}%)"
     )
 
+    # Context: the same breakdown for the whole AOI, not just the flood zone -
+    # shows how exposed each land cover type actually is (e.g. what share of
+    # all built/sealed area in the AOI falls inside the flood zone).
+    aoi_class_df, aoi_group_df = compute_aoi_landcover_breakdown(landcover, legend, groups)
+    print()
+    print("Per-class breakdown (whole AOI):")
+    print(aoi_class_df.to_string(index=False, formatters={
+        "area_m2": "{:,.1f}".format,
+        "area_ha": "{:,.3f}".format,
+        "share_pct": "{:.1f}".format,
+    }))
+    print()
+    print("Per-group breakdown (whole AOI):")
+    print(aoi_group_df.to_string(index=False, formatters={
+        "area_m2": "{:,.1f}".format,
+        "area_ha": "{:,.3f}".format,
+        "share_pct": "{:.1f}".format,
+    }))
+
+    exposure_df: pd.DataFrame = (
+        aoi_group_df[["group", "area_m2"]]
+        .rename(columns={"area_m2": "aoi_area_m2"})
+        .merge(group_df[["group", "area_m2"]].rename(columns={"area_m2": "flood_area_m2"}), on="group", how="left")
+    )
+    exposure_df["flood_area_m2"] = exposure_df["flood_area_m2"].fillna(0.0)
+    exposure_df["pct_of_group_in_flood_zone"] = 100 * exposure_df["flood_area_m2"] / exposure_df["aoi_area_m2"]
+    exposure_df = exposure_df.sort_values("pct_of_group_in_flood_zone", ascending=False).reset_index(drop=True)
+    print()
+    print("Share of each AOI land cover group that lies within the flood zone:")
+    print(exposure_df.to_string(index=False, formatters={
+        "aoi_area_m2": "{:,.1f}".format,
+        "flood_area_m2": "{:,.1f}".format,
+        "pct_of_group_in_flood_zone": "{:.1f}".format,
+    }))
+
     # Step 3: a handful of single-value summary metrics derived from the same breakdown.
     summary_df: pd.DataFrame = compute_summary_metrics(aoi, hq100_footprint, class_df, group_df)
     print()
@@ -135,6 +170,9 @@ def main() -> None:
     class_df.to_csv(results_dir / "landcover_in_flood_zone_by_class.csv", index=False)
     group_df.to_csv(results_dir / "landcover_in_flood_zone_by_group.csv", index=False)
     summary_df.to_csv(results_dir / "landcover_in_flood_zone_summary.csv", index=False)
+    aoi_class_df.to_csv(results_dir / "landcover_in_aoi_by_class.csv", index=False)
+    aoi_group_df.to_csv(results_dir / "landcover_in_aoi_by_group.csv", index=False)
+    exposure_df.to_csv(results_dir / "landcover_flood_zone_vs_aoi_by_group.csv", index=False)
     print(f"Saved breakdown + summary CSVs to {results_dir}")
 
     # Step 4: the deliverable map (AOI, flood footprint by group, river points) and share bar chart.
@@ -145,18 +183,18 @@ def main() -> None:
     plot_clipped(aoi, hq100_footprint, landcover, legend)
 
 
-def compute_landcover_breakdown(
-    hq100_footprint: gpd.GeoDataFrame,
+def summarize_landcover(
     landcover: gpd.GeoDataFrame,
     legend: dict[int, str],
     groups: dict[int, str],
-) -> tuple[pd.DataFrame, pd.DataFrame, gpd.GeoDataFrame]:
-    # Intersecting (not just filtering) trims land cover polygons that straddle
-    # the flood boundary down to just their flooded portion.
-    flooded_landcover: gpd.GeoDataFrame = gpd.overlay(landcover, hq100_footprint, how="intersection")
-    flooded_landcover["group"] = flooded_landcover["LC2024"].map(groups)
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Per-class and per-group area breakdown of `landcover`, as a share of its own total area.
 
-    class_area: pd.Series = area_by_attribute(flooded_landcover, "LC2024")
+    Shared by compute_landcover_breakdown (landcover already intersected with
+    the flood footprint) and compute_aoi_landcover_breakdown (landcover
+    already clipped to the AOI) - same shape of output either way.
+    """
+    class_area: pd.Series = area_by_attribute(landcover, "LC2024")
     total_area: float = class_area.sum()
 
     class_df: pd.DataFrame = class_area.rename("area_m2").reset_index()
@@ -171,7 +209,34 @@ def compute_landcover_breakdown(
     group_df["share_pct"] = 100 * group_df["area_m2"] / total_area
     group_df = group_df.sort_values("area_m2", ascending=False).reset_index(drop=True)
 
+    return class_df, group_df
+
+
+def compute_landcover_breakdown(
+    hq100_footprint: gpd.GeoDataFrame,
+    landcover: gpd.GeoDataFrame,
+    legend: dict[int, str],
+    groups: dict[int, str],
+) -> tuple[pd.DataFrame, pd.DataFrame, gpd.GeoDataFrame]:
+    # Intersecting (not just filtering) trims land cover polygons that straddle
+    # the flood boundary down to just their flooded portion.
+    flooded_landcover: gpd.GeoDataFrame = gpd.overlay(landcover, hq100_footprint, how="intersection")
+    flooded_landcover["group"] = flooded_landcover["LC2024"].map(groups)
+
+    class_df, group_df = summarize_landcover(flooded_landcover, legend, groups)
     return class_df, group_df, flooded_landcover
+
+
+def compute_aoi_landcover_breakdown(
+    landcover: gpd.GeoDataFrame,
+    legend: dict[int, str],
+    groups: dict[int, str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Same breakdown as compute_landcover_breakdown, but for the whole AOI rather
+    than just the HQ100 footprint within it - context for how exposed each land
+    cover type actually is. No overlay needed: `landcover` is already AOI-clipped.
+    """
+    return summarize_landcover(landcover, legend, groups)
 
 
 # LC2024 codes for "impervious"/urban classes, used by compute_summary_metrics.
