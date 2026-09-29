@@ -10,7 +10,7 @@ from whitebox import WhiteboxTools
 # SETTINGS
 # ============================================================
 
-OUTPUT_DIR = Path("../terrain_outputs")
+OUTPUT_DIR = Path("terrain_outputs")
 
 DEM_PATH = OUTPUT_DIR / "luxembourg_dem.tif"
 WATER_PATH = OUTPUT_DIR / "luxembourg_water.tif"
@@ -246,7 +246,7 @@ def create_drainage_water():
 
 def main():
 
-    #validate_rasters()
+    validate_rasters()
 
     print("=" * 60)
     print("TERRAIN ANALYSIS")
@@ -259,7 +259,7 @@ def main():
 
     create_slope_aspect()
     create_hydrology()
-    #create_drainage_water()
+    create_drainage_water()
 
     print("\n" + "=" * 60)
     print("TERRAIN ANALYSIS COMPLETE")

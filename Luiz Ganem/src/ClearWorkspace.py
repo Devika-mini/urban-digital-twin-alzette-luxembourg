@@ -1,12 +1,12 @@
 from pathlib import Path
 import shutil
 
-OUTPUT_DIR = Path("../terrain_outputs")
-DOWNLOAD_DIR = Path("../lidar_downloads")
-EXTRACT_DIR = Path("../lidar_tiles")
+OUTPUT_DIR = Path("terrain_outputs")
+DOWNLOAD_DIR = Path("lidar_downloads")
+EXTRACT_DIR = Path("lidar_tiles")
 
 FILES_TO_DELETE = [
-    Path("../lidar_manifest.json"),
+    Path("lidar_manifest.json"),
 ]
 
 DIRS_TO_DELETE = [

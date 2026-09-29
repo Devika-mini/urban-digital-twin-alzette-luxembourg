@@ -11,20 +11,20 @@ from shapely.geometry import box
 # USER SETTINGS
 # ============================================================
 
-GPKG_PATH = Path("../lidar2024-ta.gpkg")
+GPKG_PATH = Path("lidar2024-ta.gpkg")
 
 # Any individual bound can be None.
 # None means: use Luxembourg's dataset boundary on that side.
 
-X_MIN = 80000
-X_MAX = 82000
-Y_MIN = 95000
-Y_MAX = 98000
+X_MIN = 78000
+X_MAX = 79500
+Y_MIN = 70000
+Y_MAX = 72000
 
-OUTPUT_MANIFEST = Path("../lidar_manifest.json")
+OUTPUT_MANIFEST = Path("lidar_manifest.json")
 
 DOWNLOAD = True  # Set to False to skip downloading files
-DOWNLOAD_DIR = Path("../lidar_downloads")
+DOWNLOAD_DIR = Path("lidar_downloads")
 
 
 # ============================================================

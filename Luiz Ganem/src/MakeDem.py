@@ -14,10 +14,10 @@ from scipy.ndimage import distance_transform_edt
 # SETTINGS
 # ============================================================
 
-MANIFEST_PATH = Path("../lidar_manifest.json")
+MANIFEST_PATH = Path("lidar_manifest.json")
 
-DOWNLOAD_DIR = Path("../lidar_downloads")
-EXTRACT_DIR = Path("../lidar_tiles")
+DOWNLOAD_DIR = Path("lidar_downloads")
+EXTRACT_DIR = Path("lidar_tiles")
 
 OUTPUT_DIR = Path("terrain_outputs")
 OUTPUT_DEM = OUTPUT_DIR / "luxembourg_dem.tif"
@@ -167,12 +167,12 @@ def create_dem_array(manifest):
         dtype=np.float32
     )
 
-    water_mask = np.zeros(
+    water_map = np.zeros(
     (height, width),
     dtype=np.uint8
     )
 
-    return dem, water_mask, xmin, xmax, ymin, ymax
+    return dem, water_map, xmin, xmax, ymin, ymax
 
 
 # ============================================================
@@ -182,7 +182,7 @@ def create_dem_array(manifest):
 def process_laz(
     laz_path,
     dem,
-    water_mask,
+    water_map,
     tile_bounds,
     xmin,
     xmax,
@@ -210,6 +210,7 @@ def process_laz(
     x = np.asarray(las.x)[class_mask]
     y = np.asarray(las.y)[class_mask]
     z = np.asarray(las.z)[class_mask]
+    water_mask = classification[class_mask] == WATER_CLASS
 
     # --------------------------------------------------------
     # Crop to exact requested area
@@ -233,11 +234,32 @@ def process_laz(
         & (y < effective_ymax)
     )
 
+    """print("\n--- BBOX DEBUG ---")
+    print(f"LAZ: {laz_path.name}")
+
+    print("Actual point bounds:")
+    print(f"  X: {x.min():.2f} -> {x.max():.2f}")
+    print(f"  Y: {y.min():.2f} -> {y.max():.2f}")
+
+    print("Manifest tile bounds:")
+    print(f"  X: {tile_xmin} -> {tile_xmax}")
+    print(f"  Y: {tile_ymin} -> {tile_ymax}")
+
+    print("Requested bounds:")
+    print(f"  X: {xmin} -> {xmax}")
+    print(f"  Y: {ymin} -> {ymax}")
+
+    print("Effective bounds:")
+    print(f"  X: {effective_xmin} -> {effective_xmax}")
+    print(f"  Y: {effective_ymin} -> {effective_ymax}")"""
+
     x = x[bbox_mask]
     y = y[bbox_mask]
     z = z[bbox_mask]
+    water_mask = water_mask[bbox_mask]
 
     if len(x) == 0:
+        #print(f"No points in requested bounds for this tile: {laz_path.name}")
         return
 
     # --------------------------------------------------------
@@ -265,6 +287,7 @@ def process_laz(
     rows = rows[valid]
     cols = cols[valid]
     z = z[valid]
+    water_mask = water_mask[valid]
 
     # --------------------------------------------------------
     # Highest Z value per 0.5 m cell
@@ -279,11 +302,10 @@ def process_laz(
     # --------------------------------------------------------
     # Watermask making
     # --------------------------------------------------------
-    water = classification == WATER_CLASS
 
-    water_mask[
-        rows[water],
-        cols[water]
+    water_map[
+        rows[water_mask],
+        cols[water_mask]
     ] = 1
 
 # ============================================================
@@ -386,7 +408,7 @@ def save_dem(
 # SAVE WATERMASK
 # ============================================================
 
-def save_water_mask(water_mask, xmin, ymax):
+def save_water_map(water_map, xmin, ymax):
 
     transform = from_origin(
         xmin,
@@ -399,8 +421,8 @@ def save_water_mask(water_mask, xmin, ymax):
         OUTPUT_WATER,
         "w",
         driver="GTiff",
-        height=water_mask.shape[0],
-        width=water_mask.shape[1],
+        height=water_map.shape[0],
+        width=water_map.shape[1],
         count=1,
         dtype="uint8",
         crs="EPSG:2169",
@@ -410,7 +432,9 @@ def save_water_mask(water_mask, xmin, ymax):
         nodata=0
     ) as dst:
 
-        dst.write(water_mask, 1)
+        dst.write(water_map, 1)
+
+    print("Water map saved successfully.")
 
 
 # ============================================================
@@ -435,7 +459,7 @@ def main():
 
     (
         dem,
-        water_mask,
+        water_map,
         xmin,
         xmax,
         ymin,
@@ -452,7 +476,7 @@ def main():
         process_laz(
             laz_path,
             dem,
-            water_mask,
+            water_map,
             tile["bounds"],
             xmin,
             xmax,
@@ -464,14 +488,19 @@ def main():
         dem
     )
 
+    OUTPUT_DIR.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
     save_dem(
         dem,
         xmin,
         ymax
     )
 
-    save_water_mask(
-        water_mask,
+    save_water_map(
+        water_map,
         xmin,
         ymax
     )
