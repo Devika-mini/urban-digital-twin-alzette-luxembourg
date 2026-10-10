@@ -1,0 +1,264 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "id": "MF.PointTimeSeriesObservation_Hourly_ASTA_sum_nn050.928E6A5E7CAECD8CC6C8B0B92F3C24E4",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          6.14172,
+          49.54014
+        ]
+      },
+      "geometry_name": "geometry",
+      "properties": {
+        "datetime": "2026-10-02T03:00:00Z",
+        "gml_identifier": "AGM_013_20251009_20261009",
+        "featureofinterest_xlink_href": "http://catalog.inspire.geoportail.lu/geonetwork/dataset/00b35d13-111e-45c7-bc65-556b61d17c7e/AGM_013",
+        "name_descr": "Roeser",
+        "day": "2026-10-02",
+        "time": "03:00:00+01:00",
+        "sum_nn050": 0.01
+      },
+      "bbox": [
+        6.14172,
+        49.54014,
+        6.14172,
+        49.54014
+      ]
+    },
+    {
+      "type": "Feature",
+      "id": "MF.PointTimeSeriesObservation_Hourly_ASTA_sum_nn050.7F0D281D7857CEAA4053F1B8F4A67AE7",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          6.14172,
+          49.54014
+        ]
+      },
+      "geometry_name": "geometry",
+      "properties": {
+        "datetime": "2026-10-02T04:00:00Z",
+        "gml_identifier": "AGM_013_20251009_20261009",
+        "featureofinterest_xlink_href": "http://catalog.inspire.geoportail.lu/geonetwork/dataset/00b35d13-111e-45c7-bc65-556b61d17c7e/AGM_013",
+        "name_descr": "Roeser",
+        "day": "2026-10-02",
+        "time": "04:00:00+01:00",
+        "sum_nn050": 0
+      },
+      "bbox": [
+        6.14172,
+        49.54014,
+        6.14172,
+        49.54014
+      ]
+    },
+    {
+      "type": "Feature",
+      "id": "MF.PointTimeSeriesObservation_Hourly_ASTA_sum_nn050.33A6F11A138F7D4BFADA599BC15FA183",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          6.14172,
+          49.54014
+        ]
+      },
+      "geometry_name": "geometry",
+      "properties": {
+        "datetime": "2026-10-02T05:00:00Z",
+        "gml_identifier": "AGM_013_20251009_20261009",
+        "featureofinterest_xlink_href": "http://catalog.inspire.geoportail.lu/geonetwork/dataset/00b35d13-111e-45c7-bc65-556b61d17c7e/AGM_013",
+        "name_descr": "Roeser",
+        "day": "2026-10-02",
+        "time": "05:00:00+01:00",
+        "sum_nn050": 0.01
+      },
+      "bbox": [
+        6.14172,
+        49.54014,
+        6.14172,
+        49.54014
+      ]
+    },
+    {
+      "type": "Feature",
+      "id": "MF.PointTimeSeriesObservation_Hourly_ASTA_sum_nn050.4E12C4016B0E74A1EB996C67530F59CF",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          6.0193,
+          49.63353
+        ]
+      },
+      "geometry_name": "geometry",
+      "properties": {
+        "datetime": "2026-10-02T03:00:00Z",
+        "gml_identifier": "AGM_019_20251009_20261009",
+        "featureofinterest_xlink_href": "http://catalog.inspire.geoportail.lu/geonetwork/dataset/00b35d13-111e-45c7-bc65-556b61d17c7e/AGM_019",
+        "name_descr": "Mamer",
+        "day": "2026-10-02",
+        "time": "03:00:00+01:00",
+        "sum_nn050": 0
+      },
+      "bbox": [
+        6.0193,
+        49.63353,
+        6.0193,
+        49.63353
+      ]
+    },
+    {
+      "type": "Feature",
+      "id": "MF.PointTimeSeriesObservation_Hourly_ASTA_sum_nn050.A4CC5362CC6D5982B11520D2CC34C1B2",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          6.0193,
+          49.63353
+        ]
+      },
+      "geometry_name": "geometry",
+      "properties": {
+        "datetime": "2026-10-02T04:00:00Z",
+        "gml_identifier": "AGM_019_20251009_20261009",
+        "featureofinterest_xlink_href": "http://catalog.inspire.geoportail.lu/geonetwork/dataset/00b35d13-111e-45c7-bc65-556b61d17c7e/AGM_019",
+        "name_descr": "Mamer",
+        "day": "2026-10-02",
+        "time": "04:00:00+01:00",
+        "sum_nn050": 0
+      },
+      "bbox": [
+        6.0193,
+        49.63353,
+        6.0193,
+        49.63353
+      ]
+    },
+    {
+      "type": "Feature",
+      "id": "MF.PointTimeSeriesObservation_Hourly_ASTA_sum_nn050.A0BB03F3BA948AA4D968742B074BF2F7",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          6.0193,
+          49.63353
+        ]
+      },
+      "geometry_name": "geometry",
+      "properties": {
+        "datetime": "2026-10-02T05:00:00Z",
+        "gml_identifier": "AGM_019_20251009_20261009",
+        "featureofinterest_xlink_href": "http://catalog.inspire.geoportail.lu/geonetwork/dataset/00b35d13-111e-45c7-bc65-556b61d17c7e/AGM_019",
+        "name_descr": "Mamer",
+        "day": "2026-10-02",
+        "time": "05:00:00+01:00",
+        "sum_nn050": 0
+      },
+      "bbox": [
+        6.0193,
+        49.63353,
+        6.0193,
+        49.63353
+      ]
+    },
+    {
+      "type": "Feature",
+      "id": "MF.PointTimeSeriesObservation_Hourly_ASTA_sum_nn050.34FA90E81D87898FA4B3ED401A28ACAC",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          6.27995,
+          49.57457
+        ]
+      },
+      "geometry_name": "geometry",
+      "properties": {
+        "datetime": "2026-10-02T03:00:00Z",
+        "gml_identifier": "AGM_028_20251009_20261009",
+        "featureofinterest_xlink_href": "http://catalog.inspire.geoportail.lu/geonetwork/dataset/00b35d13-111e-45c7-bc65-556b61d17c7e/AGM_028",
+        "name_descr": "Trintange",
+        "day": "2026-10-02",
+        "time": "03:00:00+01:00",
+        "sum_nn050": 0.01
+      },
+      "bbox": [
+        6.27995,
+        49.57457,
+        6.27995,
+        49.57457
+      ]
+    },
+    {
+      "type": "Feature",
+      "id": "MF.PointTimeSeriesObservation_Hourly_ASTA_sum_nn050.73B3FBBAB3030D5B6A630A501AE68B44",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          6.27995,
+          49.57457
+        ]
+      },
+      "geometry_name": "geometry",
+      "properties": {
+        "datetime": "2026-10-02T04:00:00Z",
+        "gml_identifier": "AGM_028_20251009_20261009",
+        "featureofinterest_xlink_href": "http://catalog.inspire.geoportail.lu/geonetwork/dataset/00b35d13-111e-45c7-bc65-556b61d17c7e/AGM_028",
+        "name_descr": "Trintange",
+        "day": "2026-10-02",
+        "time": "04:00:00+01:00",
+        "sum_nn050": null
+      },
+      "bbox": [
+        6.27995,
+        49.57457,
+        6.27995,
+        49.57457
+      ]
+    },
+    {
+      "type": "Feature",
+      "id": "MF.PointTimeSeriesObservation_Hourly_ASTA_sum_nn050.9779C832CE8FB75A39F0C45FC5E8BD74",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          6.27995,
+          49.57457
+        ]
+      },
+      "geometry_name": "geometry",
+      "properties": {
+        "datetime": "2026-10-02T05:00:00Z",
+        "gml_identifier": "AGM_028_20251009_20261009",
+        "featureofinterest_xlink_href": "http://catalog.inspire.geoportail.lu/geonetwork/dataset/00b35d13-111e-45c7-bc65-556b61d17c7e/AGM_028",
+        "name_descr": "Trintange",
+        "day": "2026-10-02",
+        "time": "05:00:00+01:00",
+        "sum_nn050": 0.01
+      },
+      "bbox": [
+        6.27995,
+        49.57457,
+        6.27995,
+        49.57457
+      ]
+    }
+  ],
+  "totalFeatures": 9,
+  "numberMatched": 9,
+  "numberReturned": 9,
+  "timeStamp": "2026-10-10T10:40:18.364Z",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:EPSG::4326"
+    }
+  },
+  "bbox": [
+    6.0193,
+    49.54014,
+    6.27995,
+    49.63353
+  ]
+}

@@ -1,0 +1,91 @@
+# data_sources/_template.yml
+#
+# Two parts:
+#   protocol: filled in by whoever hands over the source (human-readable).
+#   fetch:    technical settings the ingestion module reads. Filled in by the
+#             person who integrates the source, not by the data provider.
+#
+# "unknown" and "to confirm" are deliberate. Do not replace them with guesses.
+
+id: ""
+protocol_version: 1
+filled_in: ""
+filled_in_by: ""
+
+protocol:
+  source_and_endpoint:
+    provider: ""
+    dataset_page: ""
+    url_template: ""
+    layer: ""
+
+  owner:
+    provider_contact: ""
+    team_contact: ""
+
+  decision_it_feeds: ""
+
+  variables_and_units:
+    - field: ""
+      unit: ""
+      meaning: ""
+
+  measurement_interval: ""
+
+  publication_schedule: ""
+
+  location:
+    station_name_field: ""
+    station_id: ""
+    geometry: ""
+    crs: ""
+
+  missing_values: ""
+
+  revisions: ""
+
+  max_per_request: ""
+
+  horizon_at_source: ""
+
+  keep_beyond_horizon:
+    archive: ""
+    how_long: ""
+
+  acceptance_check:
+    sample_file: ""
+    station: ""
+    from: ""
+    to: ""
+    rows: ""
+    nulls: ""
+    null_at: ""
+    total_mm: ""
+
+  remarks: []
+
+fetch:
+  kind: ""
+  base_url: ""
+  params: {}
+  auth: ""
+
+  station_field: ""
+  stations: []
+
+  time_field: ""
+  value_field: ""
+  variable: ""
+  unit: ""
+  station_id_from: ""
+  keep_raw_fields: []
+
+  unique_key: []
+
+  overlap_hours: ""
+  backfill_chunk_days: ""
+  schedule: ""
+
+  tables:
+    stations: ""
+    observations: ""

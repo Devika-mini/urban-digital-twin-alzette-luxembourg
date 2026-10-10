@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eddie_alzette_ingest"
+version = "0.0.1"
+description = "Alzette digital twin: EDDIE plugin ingesting weather data sources described by data_sources/*.yml"
+requires-python = ">=3.11"
+# Loose/minimum specifiers only - EDDIE's own environment.yml already pins
+# exact versions for most of these; this file must not fight that when
+# pip-installed into the same conda env.
+dependencies = [
+    "requests",
+    "pyyaml",
+    "pandas",
+    "geopandas",
+    "shapely",
+    "sqlalchemy>=2",
+    "geoalchemy2",
+    "psycopg2-binary",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools]
+packages = ["eddie_alzette_ingest"]
+
+[tool.pytest.ini_options]
+markers = ["integration: needs a running PostGIS (db_postgres_digital_twin); not run by default"]
+addopts = "-m 'not integration'"

@@ -1,0 +1,127 @@
+# data_sources/asta_precipitation.yml
+#
+# Two parts:
+#   protocol: filled in by whoever hands over the source (human-readable).
+#   fetch:    technical settings the ingestion module reads. Filled in by the
+#             person who integrates the source, not by the data provider.
+#
+# "unknown" and "to confirm" are deliberate. Do not replace them with guesses.
+
+id: asta_precipitation
+protocol_version: 1
+filled_in: 2026-10-10
+filled_in_by: Robin, from Lagloire's README and browser checks on 2026-10-10
+
+protocol:
+  source_and_endpoint:
+    provider: ASTA, Luxembourg (served through the INSPIRE geoportal)
+    dataset_page: https://data.public.lu/en/datasets/inspire-annex-iii-meteorological-geographical-features-pointtimeseriesobservation-hourly-weather-measurements-of-asta/
+    url_template: "https://wms.inspire.geoportail.lu/geoserver/mf/wfs?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature&TYPENAME={layer}&SRSNAME=EPSG:4326&OUTPUTFORMAT=application/json&CQL_FILTER={filter}"
+    layer: MF.PointTimeSeriesObservation_Hourly_ASTA_sum_nn050
+
+  owner:
+    provider_contact: unknown
+    team_contact: Lagloire
+
+  decision_it_feeds: >
+    Flood-damage channel (rainfall as driver of water level and flood extent)
+    and the rain scenarios the professor will inject (drought, prolonged high
+    rainfall).
+
+  variables_and_units:
+    - field: sum_nn050
+      unit: mm
+      meaning: precipitation sum over one hour
+
+  measurement_interval: hourly
+
+  publication_schedule: >
+    Daily, apparently. Observed once: a query at 2026-10-10 08:49 UTC returned
+    2026-10-09 23:00 as the newest record. Hour of the daily update unknown.
+
+  location:
+    station_name_field: name_descr
+    station_id: last path segment of featureofinterest_xlink_href (e.g. AGM_015)
+    geometry: point, one per station
+    crs: EPSG:4326 (as requested through SRSNAME)
+
+  missing_values: >
+    To confirm. The reference sample holds one null value (Roeser,
+    2026-09-29T09:00Z). The full-year query had a row for every hour, which
+    suggests gaps arrive as null values and not as absent rows (inference).
+
+  revisions: unknown (are published values corrected later?)
+
+  max_per_request: no cap observed up to 43,920 rows in one request
+
+  horizon_at_source: >
+    Rolling 366 days. Observed 2026-10-10: data from 2025-10-09 to 2026-10-09;
+    queries for 2024 return nothing.
+
+  keep_beyond_horizon:
+    archive: yes
+    how_long: indefinitely for now (team to confirm)
+
+  acceptance_check:
+    sample_file: precipitation_roeser_7days_eddie.geojson
+    station: Roeser
+    from: "2026-09-25T01:00:00Z"
+    to: "2026-10-01T23:00:00Z"
+    rows: 167
+    nulls: 1
+    null_at: "2026-09-29T09:00:00Z"
+    total_mm: 7.11
+
+  remarks:
+    - Station Merl returns no data.
+    - >
+      Time zone unresolved: "datetime" ends in Z (UTC) while "time" shows
+      +01:00 for the same clock time, and Luxembourg is on +02:00 in early
+      October. Store both raw strings; do not convert until confirmed.
+    - No API key needed. Licence and redistribution terms not checked yet.
+    - The AFTER and BEFORE bounds of the time filter are both exclusive.
+    - >
+      Same service, other variables by layer suffix: avg_ta200 (air
+      temperature), avg_rh200 (relative humidity), avg_wv1000 (wind speed),
+      avg_tb005 (soil temperature).
+
+fetch:
+  kind: wfs_point_timeseries
+  base_url: https://wms.inspire.geoportail.lu/geoserver/mf/wfs
+  params:
+    SERVICE: WFS
+    VERSION: "2.0.0"
+    REQUEST: GetFeature
+    TYPENAME: MF.PointTimeSeriesObservation_Hourly_ASTA_sum_nn050
+    SRSNAME: "EPSG:4326"
+    OUTPUTFORMAT: application/json
+  auth: none
+
+  station_field: name_descr
+  # The stations Lagloire found within 10 km of the local watershed. All are
+  # pulled, because the watershed is redefined next week and the weights
+  # (currently Roeser 51.64 %, Luxembourg-Ville 48.36 %) will change with it.
+  stations:
+    - Roeser
+    - Luxembourg-Ville
+    - Mamer
+    - Reckange
+    - Trintange
+    - Merl          # returned nothing on 2026-10-10; kept so a comeback is noticed
+
+  time_field: datetime
+  value_field: sum_nn050
+  variable: sum_nn050
+  unit: mm
+  station_id_from: featureofinterest_xlink_href
+  keep_raw_fields: [datetime, time, day, gml_identifier]
+
+  unique_key: [station_id, datetime, variable]
+
+  overlap_hours: 48        # re-fetch this much before the last stored timestamp
+  backfill_chunk_days: 31  # no cap seen, chunked anyway
+  schedule: daily          # set the hour once the update time is known
+
+  tables:
+    stations: weather_stations
+    observations: weather_observations

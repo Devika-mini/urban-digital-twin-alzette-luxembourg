@@ -1,11 +1,24 @@
-# Environments
+# Environments, keys, passwords
 .env
+*.env
 .venv
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Python packaging/test artifacts
+*.egg-info/
+.pytest_cache/
+
+# Rasters, database dumps, logs
+*.tif
+*.tiff
+*.geotiff
+*.sql
+*.dump
+*.log
  
 # Python cache
 __pycache__/
@@ -39,3 +52,4 @@ Thumbs.db
 data/
 results/
 docs/
+EDDIE/
