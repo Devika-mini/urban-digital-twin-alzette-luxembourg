@@ -6,25 +6,29 @@ import requests
 import geopandas as gpd
 from shapely.geometry import box
 
+import PipelineConfig
+
 
 # ============================================================
-# USER SETTINGS
+# USER SETTINGS (from config/config.toml)
 # ============================================================
 
-GPKG_PATH = Path("lidar2024-ta.gpkg")
+CFG = PipelineConfig.load()
 
-# Any individual bound can be None.
+GPKG_PATH = Path(CFG["paths"]["tile_index_gpkg"])
+
+# Any individual bound can be None (left out of [extent]).
 # None means: use Luxembourg's dataset boundary on that side.
 
-X_MIN = 78000
-X_MAX = 79500
-Y_MIN = 70000
-Y_MAX = 72000
+X_MIN = CFG["extent"].get("x_min")
+X_MAX = CFG["extent"].get("x_max")
+Y_MIN = CFG["extent"].get("y_min")
+Y_MAX = CFG["extent"].get("y_max")
 
-OUTPUT_MANIFEST = Path("lidar_manifest.json")
+OUTPUT_MANIFEST = Path(CFG["paths"]["manifest"])
 
-DOWNLOAD = True  # Set to False to skip downloading files
-DOWNLOAD_DIR = Path("lidar_downloads")
+DOWNLOAD = CFG["manifest"]["download"]  # Set to False to skip downloading files
+DOWNLOAD_DIR = Path(CFG["paths"]["download_dir"])
 
 
 # ============================================================
@@ -358,6 +362,11 @@ def create_manifest(
 
         "tiles": tiles,
     }
+
+    OUTPUT_MANIFEST.parent.mkdir(
+        parents=True,
+        exist_ok=True
+    )
 
     with open(
         OUTPUT_MANIFEST,

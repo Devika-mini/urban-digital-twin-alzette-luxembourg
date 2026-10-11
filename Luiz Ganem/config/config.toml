@@ -1,0 +1,285 @@
+# ============================================================
+# DEM / TERRAIN PIPELINE CONFIGURATION
+# ============================================================
+#
+# Read by every script in src/ (via src/PipelineConfig.py). Run the whole
+# workflow with:
+#
+#     python src/RunPipeline.py                      (this file)
+#     python src/RunPipeline.py config/other.toml    (another config)
+#
+# Single scripts (python src/MakeDem.py, ...) read this file, or the file
+# named in the environment variable DEM_PIPELINE_CONFIG.
+#
+# All paths are relative to the project root (run the scripts from there).
+# These defaults reproduce the current results exactly.
+
+
+# ============================================================
+# STEPS (true = run, false = skip)
+# ============================================================
+#
+# RunPipeline.py runs the enabled steps in this order. A skipped step's
+# outputs must already exist if a later step needs them.
+
+[steps]
+manifest = true          # select LiDAR tiles for [extent] -> paths.manifest (ManifestTiles.py)
+tiles = true             # extract the required .laz tiles from the downloads (MakeDem.py)
+dem = true               # build DEM + water mask from the tiles (MakeDem.py)
+slope_aspect = true      # slope + aspect rasters (TerrainAnalysis.py)
+hydrology = true         # filled DEM, D8 pointer, flow accumulation, basins (Whitebox)
+drainage_water = true    # flow accumulation inside the water mask
+watersheds = true        # multi-scale watersheds + drainage points
+centerlines = true       # stream network + named main river centerlines
+river_bed = true         # HAND + river bed polygons
+marker_check = true      # check centerlines against the river km markers
+comparison = true        # compare with paths.comparison_dem (only runs if that path is set)
+
+
+# ============================================================
+# DEM EXTENT (EPSG:2169 / LUREF, metres)
+# ============================================================
+#
+# Area of the DEM. Remove (or comment out) a bound to use the LiDAR
+# dataset's own boundary on that side. Luxembourg spans roughly
+# x 48,000-107,000 and y 57,000-139,000. Each 0.5 m DEM cell costs ~70 B of
+# RAM in the terrain analysis (whole-Luxembourg ~1 TB, so crop it).
+
+[extent]
+x_min = 77000
+x_max = 80000
+y_min = 69000
+y_max = 73000
+
+
+# ============================================================
+# PATHS
+# ============================================================
+
+[paths]
+# LiDAR tile index (GeoPackage with tile polygons, names and download links)
+tile_index_gpkg = "visualization/lidar2024-ta.gpkg"
+
+# Tile manifest written by ManifestTiles.py and read by MakeDem.py
+manifest = "visualization/lidar_manifest.json"
+
+# Downloaded LiDAR archives (.zip) and the extracted .laz tiles
+download_dir = "lidar_downloads"
+extract_dir = "lidar_tiles"
+
+# Main DEM and water mask: written by MakeDem.py, read by TerrainAnalysis.py
+dem = "visualization/terrain_outputs/tif/luxembourg_dem.tif"
+water = "visualization/terrain_outputs/tif/luxembourg_water.tif"
+
+# Official watercourse kilometre markers (points, any number of layers).
+# NOTE: the file is actually at "visualization/kilometrage-des-cours-deau.gpkg".
+# This default reproduces the current results, in which it is NOT found
+# (no named rivers, no river bed). Set it to the visualization/ path to
+# enable river naming, river bed and the marker check.
+river_km_gpkg = "kilometrage-des-cours-deau.gpkg"
+
+# Terrain analysis outputs (GeoTIFFs in <output_dir>/<tif_subdir>,
+# vector files in <output_dir>/<vector_subdir>)
+output_dir = "visualization/terrain_outputs"
+
+# Comparison run (TestFullDem.py / RunPipeline.py "comparison" step):
+# a second DEM (EPSG:2169, any size) analysed and compared with the main
+# DEM. Empty = no comparison.
+comparison_dem = ""
+# Water mask aligned with comparison_dem. Empty = an empty mask is used
+# (drainage_water is then empty and the river bed uses hand_fallback_m).
+comparison_water = "visualization/MNT_Lidar2024.tif"
+# Crop comparison_dem to [x_min, y_min, x_max, y_max] (EPSG:2169 m) before
+# running. Empty list = use the whole DEM.
+comparison_bbox = []
+# Output folder of the comparison (baseline/, test/, report). Never inside output_dir.
+comparison_output_dir = "visualization/test_terrain_outputs"
+# Km markers used by both comparison runs ("" = same as river_km_gpkg).
+# Set to the real location so the comparison can name rivers.
+comparison_km_gpkg = "visualization/kilometrage-des-cours-deau.gpkg"
+
+
+# ============================================================
+# OUTPUT LAYOUT
+# ============================================================
+
+[outputs]
+tif_subdir = "tif"              # all GeoTIFFs
+vector_subdir = "vectors"       # all vector files (GeoPackages)
+watersheds_subdir = "watersheds"  # watershed outputs, inside both of the above
+config_copy_name = "config_used.toml"  # copy of the config saved by RunPipeline.py
+
+
+# ============================================================
+# TILE SELECTION (ManifestTiles.py)
+# ============================================================
+
+[manifest]
+# Download the selected LiDAR archives (~1.7 GB each) into paths.download_dir.
+# Existing files are not downloaded again.
+download = true
+
+
+# ============================================================
+# DEM BUILDING (MakeDem.py)
+# ============================================================
+
+[dem]
+# DEM cell size in metres (LiDAR 2024 density supports 0.25-1 m)
+resolution = 0.5
+# LAS classes used for the terrain (2 = ground, 9 = water)
+ground_classes = [2, 9]
+# LAS class written to the water mask
+water_class = 9
+
+# DEMs with up to this many cells are built in memory (~18 B/cell at peak);
+# larger ones on disk, block by block. Range 1e7-1e9 depending on RAM.
+max_in_memory_cells = 200_000_000
+# Block size (cells per side) of the on-disk gap filling (1024-8192)
+fill_block_size = 4096
+# Context (cells) read around each block for gap filling; larger gaps use a
+# KD-tree. Must be well below fill_block_size (128-2048).
+fill_halo = 512
+# Folder for temporary files of the on-disk build ("" = system temp).
+# Needs ~5 B per DEM cell of free space.
+temp_dir = ""
+
+
+# ============================================================
+# TERRAIN ANALYSIS (TerrainAnalysis.py)
+# ============================================================
+#
+# Area thresholds are in hectares, distances in metres; they are
+# converted to cells from the DEM cell size at runtime.
+
+[terrain]
+# Processing tile size (cells per side) for windowed reads/writes.
+# Memory per tile ~100 B/cell -> 2048 uses ~0.5 GB (512-8192).
+block_size = 2048
+# Stream links processed at once when sampling centerlines (1000-50000)
+centerline_chunk_lines = 5000
+
+[watersheds]
+# Edge outlets draining less than this are merged into one "minor_edge"
+# unit (ws_id = 0). ha, 0.1-5.
+edge_basin_min_ha = 0.5
+# Km markers are snapped to the highest flow accumulation cell within this
+# distance. m, 5-50.
+marker_snap_distance_m = 20.0
+
+# Multi-scale watersheds: minimum upstream area (ha) of a stream link at each
+# scale. Any number of scales; names become file names. Coarse to fine is
+# derived from the values. Useful range 0.1-1000 ha.
+[watersheds.thresholds_ha]
+large = 25.0
+medium = 5.0
+small = 0.5
+
+[rivers]
+# Fields of the km marker layers: river name and kilometre
+name_field = "TOPONYME"
+km_field = "KILO_KM"
+# Stream network = cells with upstream area >= this. ha, 0.5-50.
+centerline_threshold_ha = 2.5
+# A traced flow path is named after a river if it passes within this
+# distance of its markers. m, 10-50.
+naming_radius_m = 25.0
+# Minimum markers matched before a river is named (1-10)
+naming_min_markers = 3
+# Distances reported in the centerline validation layer. m.
+validation_buffers_m = [5.0, 10.0, 25.0]
+
+[river_bed]
+# Percentile of HAND over water-mask cells near the rivers used as the bed
+# threshold (50-99)
+hand_percentile = 90
+# The threshold is clamped to [min, max]. m.
+hand_clamp_m = [0.5, 2.0]
+# Threshold used if no water-mask cells are near the rivers. m, 0.5-3.
+hand_fallback_m = 1.0
+# Bed cells must lie within this distance of a main river centerline. m, 10-100.
+bed_max_distance_m = 30.0
+# Water-mask cells within this distance of the rivers set the threshold. m, 10-100.
+water_check_buffer_m = 30.0
+
+
+# ============================================================
+# CENTERLINE vs KM MARKER CHECK (TerrainAnalysis.create_marker_check)
+# ============================================================
+
+[marker_check]
+# Markers farther than this from every centerline count as "no centerline
+# nearby". m, 10-100.
+search_distance_m = 25.0
+# A marker is "on" the centerline if its cell is within this many cells of a
+# centerline-raster cell (0 = same cell, 1 = same or adjacent cell). 0-3.
+on_centerline_tolerance_cells = 1
+
+
+# ============================================================
+# COMPARISON (TestFullDem.py)
+# ============================================================
+
+[comparison]
+# Estimated memory / disk per DEM cell for the whole pipeline (measured
+# 2026-10-11: 70 B RAM, ~35 B disk). Used to refuse runs that cannot fit.
+bytes_per_cell_ram = 70
+bytes_per_cell_disk = 40
+# Share of free RAM / disk the estimate may use (0.5-0.95)
+resource_margin = 0.8
+# Run even if the estimate exceeds that share (same as TestFullDem.py --force)
+force = false
+# Spacing of the points compared between centerlines. m, 0.5-5.
+centerline_sample_m = 1.0
+# IoU at which watersheds / river beds count as matching (0-1)
+iou_good = 0.5
+# Report flags above these values
+centerline_max_mean_m = 5.0     # mean centerline offset, m
+elevation_max_mean_abs_m = 0.5  # mean |elevation difference| in the overlap, m
+scaling_max_ratio = 2.0         # time per cell, test / baseline
+
+
+# ============================================================
+# WORKSPACE (MetaWorkspace.py)
+# ============================================================
+
+[workspace]
+# false: clear the workspace, i.e. delete everything the scripts created
+#        that is switched on in [workspace.clear] below.
+# true:  copy the workspace into the GitHub repo folder instead (nothing is
+#        deleted anywhere; no git commands are run).
+copy_to_repo = true
+
+# Copy target: <repo_dir>/<repo_subfolder>/<same relative path>
+repo_dir = "urban-digital-twin-alzette-luxembourg"
+repo_subfolder = "Luiz Ganem"
+# Files and folders copied (relative to the project root)
+copy_items = [
+    "src",
+    "config",
+    "requirements.txt",
+    "_readme.txt",
+    "visualization/terrain_outputs/vectors",
+    "visualization/terrain_outputs/tif",
+    "visualization/terrain_outputs/config_used.toml",
+]
+# Skipped wherever they appear (glob patterns on file/folder names)
+copy_exclude = [
+    ".venv", "lidar_downloads", "lidar_tiles", "__pycache__", "*.pyc",
+    "*.tmp", "*.temp", "~*", "*.aux.xml", "*.gpkg-wal", "*.gpkg-shm", ".claude",
+]
+# Files above this size are skipped with a warning (GitHub limit: 100 MB)
+max_file_mb = 100
+
+# What clearing deletes (copy_to_repo = false); true = delete. Paths are
+# taken from [paths], so they follow this config. Input data (tile index,
+# km markers, MNT_Lidar2024.tif, ...), src/, config/ and .venv/ are never
+# deleted.
+[workspace.clear]
+manifest = true            # paths.manifest (tile list from ManifestTiles.py)
+downloads = true           # paths.download_dir: downloaded LiDAR archives (~1.7 GB each, slow to re-download)
+tiles = true               # paths.extract_dir: extracted .laz tiles (re-extracted from the downloads)
+terrain_outputs = true     # paths.output_dir: DEM, water mask, all rasters/vectors, config_used.toml
+comparison_outputs = true  # paths.comparison_output_dir: comparison runs, report, metrics
+legacy = true              # leftovers of the old layout: ./lidar_manifest.json and ./terrain_outputs/
+pycache = true             # src/__pycache__/ (Python bytecode cache)
