@@ -16,8 +16,6 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 """This script runs each module in the Digital Twin using a Sample Polygon."""
-import pathlib
-
 from eddie.digitaltwin import cache_new_results, retrieve_from_instructions
 from eddie.digitaltwin.utils import LogLevel
 from eddie.run_all import create_sample_polygon, main
@@ -25,7 +23,8 @@ from eddie.run_all import create_sample_polygon, main
 DEFAULT_MODULES_TO_PARAMETERS = {
     retrieve_from_instructions: {
         "log_level": LogLevel.INFO,
-        "instruction_json_path": pathlib.Path("src/eddie_antartica/static_boundary_instructions.json").as_posix()
+        # No remote base layers to download (the template's were New Zealand only); still initialises GeoServer.
+        "instruction_json_path": None
     },
     cache_new_results: {
         "log_level": LogLevel.INFO,

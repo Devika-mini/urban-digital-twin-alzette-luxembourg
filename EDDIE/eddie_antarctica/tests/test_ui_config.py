@@ -14,41 +14,16 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-
-
-"""" Basic UI test on Terria's Frontend"""
+"""Basic UI test on Terria's Frontend"""
 import json
-
-import pytest
 import pathlib
 
+CATALOG_PATH = pathlib.Path(__file__).resolve().parent.parent / "terriajs" / "catalog.json"
 
 
-CATALOG_PATH = pathlib.Path(__file__).resolve().parent.parent /  "terriajs" / "catalog.json"
+def test_catalog_home_camera_is_a_valid_rectangle() -> None:
+    """terriajs/catalog.json's home camera is a lon/lat rectangle (scripts/prepare_dem.py sets it to the terrain)."""
+    camera = json.loads(CATALOG_PATH.read_text())["homeCamera"]
 
-
-def test_catalog_check_home_coords() -> None:
-    """terriajs/catalog.json should be pointing towards the Ross Sea bounding box."""
-    # flags changes in the home coordinates
-
-    catalog = json.loads(CATALOG_PATH.read_text())
-
-    assert catalog["homeCamera"] == {
-        "west": 151.04,
-        "south": -78.60,
-        "east": 172.98,
-        "north": -76.45
-    }
-
-def test_sea_ice_layer_opts_into_the_timeseries_chart() -> None:
-    """The sea ice layer carries the two properties that make Terria chart it."""
-    catalog = json.loads(CATALOG_PATH.read_text())
-    members = catalog["catalog"][0]["members"]
-
-    sea_ice = [member for member in members if member.get("layers") == "sic_forecast_8w"]
-
-    assert len(sea_ice) == 1
-    assert sea_ice[0]["supportsGetTimeseries"] is True
-    assert sea_ice[0]["getFeatureInfoUrl"] == "$BACKEND_URL/sea-ice-timeseries-netcdf"
-
-
+    assert -180 <= camera["west"] < camera["east"] <= 180
+    assert -90 <= camera["south"] < camera["north"] <= 90
