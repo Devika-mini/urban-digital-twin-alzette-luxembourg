@@ -1,0 +1,14 @@
+services:
+  backend:
+    user: root
+    volumes:
+      - ../../eddie_alzette_ingest/eddie_alzette_ingest:/venv/lib/python3.11/site-packages/eddie_alzette_ingest:ro
+      - ../../data_sources:/app/data_sources:ro
+    environment:
+      - DATA_SOURCES_DIR=/app/data_sources
+  celery_worker:
+    volumes:
+      - ../../eddie_alzette_ingest/eddie_alzette_ingest:/venv/lib/python3.11/site-packages/eddie_alzette_ingest:ro
+      - ../../data_sources:/app/data_sources:ro
+    environment:
+      - DATA_SOURCES_DIR=/app/data_sources

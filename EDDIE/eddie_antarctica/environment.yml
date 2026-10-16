@@ -1,0 +1,62 @@
+# Copyright © 2021-2026 Geospatial Research Institute Toi Hangarau
+# LICENSE: https://github.com/GeospatialResearch/eddie_antartica/blob/master/LICENSE
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+# YML file for setting up the Digital-Twin Python environment
+# Locked down most package versions to reduce docker build to,e
+
+name: eddie_antartica
+channels:
+  - conda-forge
+dependencies:
+  - aiohttp==3.13.3
+  - botocore==1.42.70
+  - celery==5.5.3
+  - conda-pack==0.9.1
+  - flask==3.1.3
+  - flask-cors==6.0.2
+  - flask-swagger-ui==5.21.0
+  - gdal==3.7.0
+  - geoalchemy2==0.18.4
+  - geoapis==0.3.2
+  - geocube==0.5.3
+  - geopandas==0.14.4
+  - gevent==25.9.1
+  - libgdal==3.7.0
+  - lxml==4.9.3
+  - netCDF4
+  - pandas==2.3.3
+  - pip==26.0.1
+  - psycopg2==2.9.7
+  - pyarrow==14.0.1
+  - pygeos==0.14
+  - pytest==9.0.2
+  - python>=3.11
+  - python-dotenv==1.2.2
+  - python-pdal==3.2.3
+  - rasterio==1.3.8
+  - redis-py==7.3.0
+  - scrapy==2.11.1
+  - twisted==22.10.0
+  - sqlalchemy==2.0.48
+  - xarray
+  - pip:
+      - geovoronoi==0.4.0
+      - gunicorn==25.1.0
+      - git+https://github.com/LukeParky/NewZeaLiDAR.git@update_sqlalchemy
+      - git+https://github.com/GeospatialResearch/OWSLib.git
+      - pywps==4.7.0 # pywps is available in conda but our fork of OWSLib is required for bounding boxes
+
+prefix:
