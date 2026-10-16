@@ -1,0 +1,31 @@
+<coverage>
+    <!-- Template for a Geoserver Coverage file for a GeoTIFF layer. nativeCRS/requestSRS/responseSRS/srs are
+         filled from the file's own working CRS at runtime (see create_layer_from_gtiff_store), not hard-coded -
+         this used to be NZGD2000 / New Zealand Transverse Mercator 2000 (EPSG:2193) unconditionally. -->
+    <name>{layer_name}</name>
+    <title>{layer_name}</title>
+    <nativeCRS class="projected">
+        {native_crs_wkt}
+    </nativeCRS>
+    <supportedFormats>
+        <string>GEOTIFF</string>
+        <string>TIFF</string>
+        <string>PNG</string>
+    </supportedFormats>
+    <dimensions>
+        <coverageDimension>
+            <name>Water Depth</name>
+            <unit>m</unit>
+            <dimensionType>
+                <name>REAL_32BITS</name>
+            </dimensionType>
+        </coverageDimension>
+    </dimensions>
+    <requestSRS>
+        <string>EPSG:{epsg_code}</string>
+    </requestSRS>
+    <responseSRS>
+        <string>EPSG:{epsg_code}</string>
+    </responseSRS>
+    <srs>EPSG:{epsg_code}</srs>
+</coverage>
