@@ -2,10 +2,11 @@
 
 ## Status and first milestone
 
-Step 2 implements standalone land-use preparation and synthetic tests. Ownership
-and cadastral commands remain placeholders. Styles, EDDIE ingestion and frontend
-configuration are deferred to subsequent steps. No real LIS-L source file has been
-processed and no layer has been published by this work.
+Standalone land-use and ownership preparation are implemented with synthetic tests.
+The cadastral command remains a placeholder; land-cover investigation is deferred. Styles, EDDIE ingestion and frontend
+configuration are deferred to subsequent steps. The user validated a real LIS-L export on their Mac: 1,959 clipped polygons in
+EPSG:4326, 5,566,016 bytes, with 6 relevant polygon-part repairs. Ownership remains
+unverified on real data. No layer has been published by this work.
 
 First milestone: one correctly styled LIS-L 2024 land-use layer over the existing
 EDDIE 3D terrain, with layer toggling, a legend, and clickable attributes. Ownership
@@ -188,6 +189,76 @@ report and inspect the local output before proceeding to EDDIE integration.
 
 Preparation does not copy anything into EDDIE or contact PostGIS/GeoServer. That is
 Step 3. Styles must be based on observed category values, not guessed labels.
+
+## Ownership preparation — full grid cells
+
+Ownership is a separate dataset from LIS-L. Place `owner-type-grid.geojson` in
+ignored `devika/data/` (or supply its absolute path). It is not present in the cloud
+workspace; no real-data ownership counts, CRS or schema are claimed yet.
+
+Reuse the same virtual environment and install requirements. From repository root:
+
+```bash
+python -m pytest devika/tests -q
+python devika/scripts/prepare_ownership.py \
+  --source data/owner-type-grid.geojson \
+  --bbox 6.115 49.548 6.178 49.597 --bbox-crs EPSG:4326 \
+  --output outputs/alzette_ownership_2019.geojson
+```
+
+The example uses the same test region as land use. The bbox remains configurable;
+`--aoi data/my_alzette_aoi.geojson` selects an alternative polygon AOI. Both commands
+read the shared `subset` settings and accept `--config devika/config.local.yaml`.
+Set `sources.ownership.path` there to avoid passing `--source`. No AOI is assumed
+if neither configuration nor CLI supplies one.
+
+**Ownership percentages describe the complete nominal 1 km² grid cells, not exact
+parcel ownership or ownership percentages within the selected AOI.** The command
+selects cells that intersect the AOI (including boundary-only touches) and exports
+their **whole horizontal footprints**. Cells will normally extend outside the AOI.
+It does not clip, explode, repair, allocate percentages, or calculate AOI statistics.
+Invalid cells are rejected for inspection rather than silently changing their grid.
+
+Validation and preservation:
+
+- Require an EPSG-resolvable source/AOI CRS and valid nonempty polygon geometries.
+  GeoJSON's standard WGS84 interpretation is used by the reader where applicable;
+  no manual CRS override is guessed.
+- Require `TOP_LEFT`, `PUBLIC_PERCENT`, `Commune_percent`, `Etat_percent`, and
+  `Autre_percent`. `TOP_LEFT` must be nonempty and unique among selected cells.
+  Additional required fields can be listed under `sources.ownership.fields`.
+- Preserve **all** source attribute columns, including `Domaine_public_percent`
+  and any other category percentages. Validate fields containing `percent`
+  (case-insensitive) as finite values from 0 to 100. Numeric strings are validated
+  but preserved; they generate a field-type warning for future styling.
+- Preserve null percentages without treating them as zero; report null counts and
+  reject an entirely null selected `PUBLIC_PERCENT` column. Do not require category
+  totals to equal 100%, because totals and subcategories can overlap.
+- Export EPSG:4326 GeoJSON with full coordinate precision. Z coordinates, if present,
+  are removed only from the exported geometry, with the count recorded; source
+  footprints and all height **attributes** remain intact. Terrain supplies elevation.
+- Read back and compare feature count, CRS, complete transformed geometries, all
+  attribute names and values. The original source is opened only for reading.
+- Report minimum/maximum complete-cell area in EPSG:2169 as a grid sanity check.
+  Flag areas differing from nominal 1 km² by more than 1%, but retain the original
+  geometry for review. This is not an ownership composition calculation.
+- Apply the shared candidate, total-file and individual-feature limits and refuse
+  to overwrite existing outputs. Failure diagnostics are saved separately.
+
+Outputs are `outputs/alzette_ownership_2019.geojson` and its `.report.json` sidecar.
+The report includes the whole-cell interpretation warning, source and output CRS,
+selection, counts, field validation, original FIDs, geometry and attribute read-back
+results, grid-area checks, warnings, and file sizes. Review these before ingestion.
+The Terminal prints a summary; source FIDs remain in the full sidecar.
+
+Synthetic tests verify full 1 km² cells survive tiny-AOI selection without clipping,
+source checksums remain unchanged, unknown percentage fields are preserved, polygon
+AOI holes filter correctly, boundary touches are included, invalid percentages and
+IDs fail, nulls/numeric strings are preserved, and the CLI works outside repo root.
+**Real ownership validation is pending.** Stop after this preparation step. Land
+cover must be identified independently after confirmation; do not substitute LIS-L
+land use for land cover. EDDIE publication planning for three layers is deferred
+until all three datasets have passed validation.
 
 ## Verified EDDIE integration contract
 

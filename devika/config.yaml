@@ -1,4 +1,4 @@
-# Land-use preparation configuration. Ownership/cadastral remain placeholders.
+# Land-use and ownership preparation. Cadastral remains a placeholder.
 # Relative data paths resolve from devika/, not the shell working directory.
 sources:
   landuse:
