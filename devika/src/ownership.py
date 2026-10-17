@@ -117,9 +117,10 @@ def _prepare_ownership(source, output, *, audit, bbox=None, bbox_crs=None, aoi_p
                  source_fids=[int(fid) for fid in selected.index])
     # Complete horizontal footprints are retained; do not clip, explode or repair.
     output_z_count = int(selected.geometry.has_z.sum())
-    result = selected.copy()
+    # Transform with source Z intact: some datum transformations use height
+    # when calculating XY. Remove Z only from the final horizontal overlay.
+    result = selected.to_crs(4326)
     result.geometry = result.geometry.map(shapely.force_2d)
-    result = result.to_crs(4326)
     validate_polygons(result, "Export ownership cells")
     xmin, ymin, xmax, ymax = result.total_bounds
     if not (-180 <= xmin <= xmax <= 180 and -90 <= ymin <= ymax <= 90):
