@@ -10,7 +10,9 @@ import geopandas as gpd
 import pyogrio
 import pandas as pd
 from pyproj import CRS, Transformer
+import shapely
 from shapely.geometry import box
+from shapely.validation import explain_validity, make_valid
 
 
 class PreparationError(ValueError):
@@ -32,6 +34,31 @@ def validate_polygons(frame: gpd.GeoDataFrame, label: str) -> None:
         )
     if not all(math.isfinite(float(v)) for v in frame.total_bounds):
         raise PreparationError(f"{label}: non-finite coordinates.")
+
+
+def repair_polygons(frame: gpd.GeoDataFrame) -> tuple[gpd.GeoDataFrame, list[dict]]:
+    """Repair invalid polygons in memory; never discard collapsed components."""
+    repaired = frame.copy()
+    records = []
+    for feature_id, geometry in frame.geometry.items():
+        if geometry is None or geometry.is_empty or geometry.geom_type not in ("Polygon", "MultiPolygon"):
+            raise PreparationError(f"Source FID {feature_id}: missing/empty/non-polygon input cannot be repaired automatically.")
+        if geometry.is_valid:
+            continue
+        fixed = make_valid(geometry)
+        if fixed.is_empty or not fixed.is_valid or fixed.geom_type not in ("Polygon", "MultiPolygon"):
+            raise PreparationError(
+                f"Source FID {feature_id}: make_valid produced {fixed.geom_type}; "
+                "automatic export stopped. No components were discarded; inspect this feature separately."
+            )
+        records.append({
+            "source_fid": int(feature_id), "reason": explain_validity(geometry),
+            "before_type": geometry.geom_type, "after_type": fixed.geom_type,
+            "before_area_source_units_squared": float(geometry.area),
+            "after_area_source_units_squared": float(fixed.area),
+        })
+        repaired.at[feature_id, frame.geometry.name] = fixed
+    return repaired, records
 
 
 def make_subset(*, bbox=None, bbox_crs=None, aoi_path=None) -> gpd.GeoDataFrame:
@@ -65,6 +92,7 @@ def prepare_landuse(
     bbox_crs=None,
     aoi_path=None,
     max_features: int = 50000,
+    repair_invalid: bool = False,
 ) -> dict:
     """Export whole polygons intersecting an explicit subset, preserving attributes.
 
@@ -95,9 +123,12 @@ def prepare_landuse(
     )
     if not all(math.isfinite(v) for v in bounds):
         raise PreparationError("Subset cannot be transformed to source CRS.")
-    candidates = pyogrio.read_dataframe(source, layer=layer, bbox=bounds, max_features=max_features + 1)
+    candidates = pyogrio.read_dataframe(source, layer=layer, bbox=bounds, max_features=max_features + 1, fid_as_index=True)
     if len(candidates) > max_features:
         raise PreparationError(f"Subset exceeds the {max_features}-candidate limit; choose a smaller AOI.")
+    repairs = []
+    if repair_invalid:
+        candidates, repairs = repair_polygons(candidates)
     validate_polygons(candidates, "Selected source candidates")
     selection_geometry = subset.to_crs(source_crs).geometry.union_all()
     selected = candidates.loc[candidates.intersects(selection_geometry)].copy()
@@ -127,8 +158,13 @@ def prepare_landuse(
                       "bbox": list(bbox) if bbox is not None else None,
                       "bbox_crs": str(bbox_crs) if bbox_crs is not None else None,
                       "aoi_path": str(Path(aoi_path).resolve()) if aoi_path else None},
-        "geometry_repairs": 0, "validation_scope": "spatial subset only",
-        "versions": {"geopandas": gpd.__version__, "pyogrio": pyogrio.__version__},
+        "geometry_repairs": len(repairs), "repair_records": repairs,
+        "repair_method": "shapely.make_valid (linework)" if repair_invalid else None,
+        "repair_scope": "spatial candidates before exact AOI filtering",
+        "repair_area_note": "Areas use source CRS units; invalid pre-repair areas are diagnostic, not authoritative.",
+        "validation_scope": "spatial subset only",
+        "versions": {"geopandas": gpd.__version__, "pyogrio": pyogrio.__version__,
+                     "shapely": shapely.__version__, "geos": shapely.geos_version_string},
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     # Validate a temporary export before exposing it as the intended result.

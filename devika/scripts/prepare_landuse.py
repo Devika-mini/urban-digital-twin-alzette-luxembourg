@@ -44,6 +44,8 @@ def main(argv=None):
     selection.add_argument("--aoi", help="Polygon AOI file with CRS; relative to devika/.")
     parser.add_argument("--bbox-crs", help="Explicit bbox CRS, e.g. EPSG:4326.")
     parser.add_argument("--max-features", type=int, help="Maximum spatial candidates to read (default 50000).")
+    parser.add_argument("--repair-invalid", action="store_true",
+                        help="Opt in to audited make_valid repairs; non-polygon results still fail.")
     args = parser.parse_args(argv)
     try:
         config = yaml.safe_load((DEVIKA_ROOT / "config.yaml").read_text())
@@ -70,6 +72,7 @@ def main(argv=None):
             resolve_path(args.output or str(Path(output["directory"]) / "alzette_landuse_2024.geojson")),
             layer=source["layer"], category_field=source["category_field"],
             bbox=bbox, bbox_crs=args.bbox_crs or subset["bbox_crs"], aoi_path=resolve_path(aoi),
+            repair_invalid=args.repair_invalid,
             max_features=args.max_features if args.max_features is not None else subset.get("max_features", 50000),
         )
     except (ValueError, OSError, KeyError, TypeError, RuntimeError, yaml.YAMLError) as error:

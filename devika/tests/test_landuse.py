@@ -151,3 +151,43 @@ def test_cli_missing_source_is_actionable(tmp_path):
     process = subprocess.run([sys.executable, str(SCRIPT)], cwd=tmp_path, capture_output=True, text=True)
     assert process.returncode == 2
     assert "Supply --source" in process.stderr
+
+
+def test_opt_in_repair_preserves_source_and_attributes(tmp_path):
+    import hashlib
+    source = tmp_path / "bowtie.gpkg"
+    geometry = Polygon([(6.12, 49.55), (6.13, 49.56), (6.13, 49.55), (6.12, 49.56), (6.12, 49.55)])
+    gpd.GeoDataFrame({FIELD: ["Residential"], "record_id": [42]}, geometry=[geometry], crs=4326).to_file(source, layer=LAYER)
+    before = hashlib.sha256(source.read_bytes()).hexdigest()
+    report = run(source, tmp_path, repair_invalid=True)
+    result = gpd.read_file(tmp_path / "subset.geojson")
+    assert result.geometry.is_valid.all()
+    assert result.record_id.tolist() == [42]
+    assert report["geometry_repairs"] == 1
+    assert report["repair_records"][0]["source_fid"] == 1
+    assert "Self-intersection" in report["repair_records"][0]["reason"]
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == before
+
+
+def test_repair_refuses_collapsed_components(tmp_path):
+    source = tmp_path / "spike.gpkg"
+    # A valid square plus an outward spike; make_valid returns polygon + line.
+    geometry = Polygon([(6.12, 49.55), (6.13, 49.55), (6.14, 49.55),
+                        (6.13, 49.55), (6.13, 49.56), (6.12, 49.56), (6.12, 49.55)])
+    gpd.GeoDataFrame({FIELD: ["Residential"]}, geometry=[geometry], crs=4326).to_file(source, layer=LAYER)
+    with pytest.raises(PreparationError, match="No components were discarded"):
+        run(source, tmp_path, repair_invalid=True)
+    assert not (tmp_path / "subset.geojson").exists()
+
+
+def test_cli_repair_flag(tmp_path):
+    source = tmp_path / "invalid.gpkg"
+    geometry = Polygon([(6.12, 49.55), (6.13, 49.56), (6.13, 49.55), (6.12, 49.56), (6.12, 49.55)])
+    gpd.GeoDataFrame({FIELD: ["Residential"]}, geometry=[geometry], crs=4326).to_file(source, layer=LAYER)
+    process = subprocess.run([
+        sys.executable, str(SCRIPT), "--source", str(source),
+        "--output", str(tmp_path / "fixed.geojson"), "--bbox", "6.119", "49.549", "6.151", "49.561",
+        "--bbox-crs", "EPSG:4326", "--repair-invalid",
+    ], cwd=tmp_path, capture_output=True, text=True)
+    assert process.returncode == 0, process.stderr
+    assert json.loads(process.stdout)["geometry_repairs"] == 1

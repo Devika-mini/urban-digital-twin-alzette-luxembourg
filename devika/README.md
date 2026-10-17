@@ -114,7 +114,8 @@ The implementation:
    The default is 50,000 candidates; reduce the AOI or explicitly set
    `--max-features` if appropriate. There is no silent truncation.
 3. Rejects missing CRS, empty selections, invalid/null/empty/non-polygon geometry,
-   and all-null category columns. It does not guess CRS, repair or discard rows.
+   and all-null category columns. By default it does not repair geometries; it
+   never guesses CRS or silently discards rows.
    Validation covers the selected candidates, not the entire national dataset.
 4. Selects **whole polygons intersecting the AOI**, preserving source attributes.
    It does not clip polygon boundaries, calculate AOI statistics, or remap labels.
@@ -127,9 +128,29 @@ The implementation:
    for a later unknown-category styling rule.
 
 Existing outputs or reports are never overwritten: select a new `--output` name
-for a rerun. A missing source or rejected input exits nonzero. For invalid geometry,
-inspect and repair the source deliberately before retrying; this step makes no
-silent repairs. GeoJSON outputs and reports remain under ignored `outputs/`.
+for a rerun. A missing source or rejected input exits nonzero. GeoJSON outputs and
+reports remain under ignored `outputs/`.
+
+### Explicit geometry repair
+
+The user's local LIS-L sample contains 53 MultiPolygon candidates in EPSG:2169;
+21 report ring self-intersections. After diagnosing such errors, opt in with
+`--repair-invalid` on the same preparation command. This applies Shapely
+`make_valid` (linework) in the source CRS to invalid candidate polygons **in memory**.
+The original GeoPackage is never written. The default remains strict rejection.
+
+The report records each repaired source FID, original validity reason, geometry
+types and before/after areas in source CRS units squared, plus Shapely/GEOS versions.
+For EPSG:2169 these area units are square metres. Invalid original areas are only
+diagnostics, not accurate reference measurements. Records cover all repaired spatial
+candidates before exact AOI selection; some may not appear in the final export.
+Repairs may change geometry type or polygon parts, so inspect the result visually.
+
+Empty, non-polygon or GeometryCollection results stop the export. No collapsed
+lines/points or other components are silently removed. Missing, empty and
+non-polygon inputs also remain errors. AOI geometries are not automatically repaired.
+The local national dataset's repair outcome is still unverified in the cloud; tests
+use synthetic self-intersections and collapsed-component cases.
 
 Preparation does not copy anything into EDDIE or contact PostGIS/GeoServer. That is
 Step 3. Styles must be based on observed category values, not guessed labels.
