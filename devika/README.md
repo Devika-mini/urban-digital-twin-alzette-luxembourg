@@ -2,11 +2,10 @@
 
 ## Status and first milestone
 
-Step 1 only: independent scaffold and workflow documentation. Preparation scripts
-are explicit placeholders that exit with an error; modules contain no processing
-logic. Configuration is a planning template, not an implemented command interface.
-SLD files will be authored after inspecting the data. No layers have been ingested
-or visualised by this work.
+Step 2 implements standalone land-use preparation and synthetic tests. Ownership
+and cadastral commands remain placeholders. Styles, EDDIE ingestion and frontend
+configuration are deferred to subsequent steps. No real LIS-L source file has been
+processed and no layer has been published by this work.
 
 First milestone: one correctly styled LIS-L 2024 land-use layer over the existing
 EDDIE 3D terrain, with layer toggling, a legend, and clickable attributes. Ownership
@@ -29,9 +28,10 @@ Keep spatial analysis separate from preparation; it is deferred. EDDIE publicati
 is a separate deployment step using the existing framework. Do not build another
 ingestion implementation inside these preparation modules.
 
-Future configuration paths should resolve relative to `devika/`, independently of
-the working directory. Do not adopt ambiguous top-level `from src...` imports from
-other contributors. The command/import convention will be established in Step 2.
+Data paths resolve relative to `devika/`, independently of the working directory.
+The CLI uses the namespaced `devika.src` import; it does not import another
+contributor's top-level `src` package. An explicit `--config` file path itself is
+relative to the shell working directory.
 
 ## Inspection findings
 
@@ -51,24 +51,88 @@ Other useful ownership fields must be preserved when present. Ownership percenta
 represent aggregated 1 km² grid cells, not individual parcel ownership. The actual
 schema, CRS, category values and lookup remain unverified until sources are supplied.
 
-## Intended preparation workflow — not implemented
+## Land-use preparation
 
-1. Supply sources outside Git or under ignored `devika/data/`; configure local paths
-   in ignored `config.local.yaml` once local overrides are implemented.
-2. Read the selected source layer, inspect CRS and required attributes, validate
-   geometries, and document any repairs or rejected features. Never assign a guessed
-   CRS to coordinates or silently discard invalid records.
-3. Select a manageable initial region using an explicit AOI file or bounding box
-   with its CRS. Do not hard-code Hesperange as the permanent Alzette boundary.
-4. Preserve styling/inspection fields and transform coordinates to EPSG:4326 for
-   the planned GeoJSON export. Use a metric projected CRS if calculating area.
-5. Write outputs under ignored `devika/outputs/`, verify nonempty features, geometry,
-   attributes, bounds and CRS by reading them back, then stage only intended exports
-   into EDDIE for deployment.
+Use Python 3.11 or newer. From the repository root, create an isolated environment:
 
-GeoPandas, its vector I/O dependencies and PyYAML are expected for preparation.
-Versions and an installation command will be established with the Step 2 tests;
-no new dependency installation is required for this scaffold.
+```bash
+python3 -m venv devika/.venv
+source devika/.venv/bin/activate
+python -m pip install -r devika/requirements-dev.txt
+python -m pytest devika/tests -q
+```
+
+The dependency ranges allow current compatible wheels. Validation in this cloud
+checkout used Python 3.12, GeoPandas 1.2.0, Shapely 2.2.0 and Pyogrio 0.13.0; this is
+not a frozen lockfile or a verified Mac installation.
+
+Place the original GeoPackage under ignored `devika/data/` or use an absolute path.
+For an initial small test, the following bbox is an **example**, not a permanent
+boundary. Replace it or use an AOI file for other Alzette regions:
+
+```bash
+python devika/scripts/prepare_landuse.py \
+  --source data/landuse-luxembourg-07-15-18-21-24.gpkg \
+  --bbox 6.115 49.548 6.178 49.597 --bbox-crs EPSG:4326
+```
+
+Alternatively:
+
+```bash
+python devika/scripts/prepare_landuse.py \
+  --source /absolute/path/to/landuse-luxembourg-07-15-18-21-24.gpkg \
+  --aoi data/my_alzette_aoi.geojson \
+  --output outputs/landuse_alternative_aoi.geojson
+```
+
+AOI files must contain valid Polygon/MultiPolygon features with an EPSG-resolvable
+CRS. Multi-layer AOI containers use their default layer; prefer a single-layer AOI
+file. The bbox requires its CRS explicitly. CLI bbox/AOI selection overrides the
+configured selection. No national export occurs by default.
+
+The command reads `config.yaml`. For local settings, create ignored
+`devika/config.local.yaml` with only the sections to override, for example:
+
+```yaml
+sources:
+  landuse:
+    path: data/landuse-luxembourg-07-15-18-21-24.gpkg
+subset:
+  bbox: [6.115, 49.548, 6.178, 49.597]
+  bbox_crs: EPSG:4326
+```
+
+Run `python devika/scripts/prepare_landuse.py --config devika/config.local.yaml`.
+Local overrides are loaded only when explicitly selected. CLI source/output options
+take precedence. `--help` lists available arguments.
+
+The implementation:
+
+1. Inspects the configured source layer and requires `LU1_level__3_name` by default.
+2. Transforms the subset bounding box into the source CRS before spatial reading.
+   It reads at most the candidate limit plus one feature and fails if exceeded.
+   The default is 50,000 candidates; reduce the AOI or explicitly set
+   `--max-features` if appropriate. There is no silent truncation.
+3. Rejects missing CRS, empty selections, invalid/null/empty/non-polygon geometry,
+   and all-null category columns. It does not guess CRS, repair or discard rows.
+   Validation covers the selected candidates, not the entire national dataset.
+4. Selects **whole polygons intersecting the AOI**, preserving source attributes.
+   It does not clip polygon boundaries, calculate AOI statistics, or remap labels.
+5. Reprojects to EPSG:4326 and exports GeoJSON. A temporary round trip checks
+   geometry, EPSG, feature count, attribute names and category values before output
+   is published. Source field types may follow GeoJSON's serialization conventions.
+6. Writes `outputs/alzette_landuse_2024.geojson` and a `.report.json` sidecar with
+   source/selection metadata, counts, categories, missing/blank category counts,
+   output bounds and library versions. Partial null/blank categories are preserved
+   for a later unknown-category styling rule.
+
+Existing outputs or reports are never overwritten: select a new `--output` name
+for a rerun. A missing source or rejected input exits nonzero. For invalid geometry,
+inspect and repair the source deliberately before retrying; this step makes no
+silent repairs. GeoJSON outputs and reports remain under ignored `outputs/`.
+
+Preparation does not copy anything into EDDIE or contact PostGIS/GeoServer. That is
+Step 3. Styles must be based on observed category values, not guessed labels.
 
 ## Verified EDDIE integration contract
 
@@ -143,6 +207,8 @@ Generated files copied into EDDIE need their own local exclusion: the outer EDDI
 ignore rule does not protect paths that are already tracked. Review Git status
 before any later commit.
 
-Step 1 inspected source code and scaffold structure only. No source datasets,
-PostGIS ingestion, GeoServer styles, browser behaviour or DEM alignment were tested.
+Step 2 is tested using synthetic GeoPackages and AOI files, including projected
+coordinates, retained attributes, invalid inputs, candidate limits, and CLI use
+from another directory. No real source datasets, PostGIS ingestion, GeoServer
+styles, browser behaviour or DEM alignment were tested.
 Cloud workspace changes do not automatically update the user's Mac or GitHub fork.

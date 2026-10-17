@@ -1,5 +1,5 @@
-# Planning configuration only; no loader or preparation implementation exists yet.
-# Future relative paths resolve from devika/, not the shell working directory.
+# Land-use preparation configuration. Ownership/cadastral remain placeholders.
+# Relative data paths resolve from devika/, not the shell working directory.
 sources:
   landuse:
     path: null # landuse-luxembourg-07-15-18-21-24.gpkg
@@ -16,6 +16,7 @@ subset:
   aoi_path: null
   bbox: null # Future alternative to an AOI file; never assume its CRS.
   bbox_crs: null
+  max_features: 50000 # Limit spatial candidates before exporting.
 output:
   directory: outputs
   format: GeoJSON

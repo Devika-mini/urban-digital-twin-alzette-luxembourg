@@ -1,1 +1,1 @@
-"""Standalone geospatial preparation modules; implementation follows in later steps."""
+"""Standalone geospatial preparation modules, independent of EDDIE."""

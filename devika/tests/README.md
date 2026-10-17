@@ -1,3 +1,11 @@
-# Planned validation
+# Preparation tests
 
-No processing tests exist yet. Later tests should use small synthetic fixtures to check missing CRS, coordinate-preserving reprojection, invalid/empty geometry handling, AOI selection, required attributes, ownership percentage ranges, and output round trips. Real-data acceptance and PostGIS/GeoServer/browser checks must be reported separately. Never commit national datasets as fixtures.
+Run `python -m pytest devika/tests -q` from the repository root after installing
+`devika/requirements-dev.txt`. Tests create small synthetic GeoPackages and AOI
+files in pytest temporary directories. No external datasets or services are needed.
+
+Coverage includes EPSG:2169 to EPSG:4326 reprojection, retained attributes and
+categories, polygon AOI filtering, geometry/CRS rejection, empty selections,
+feature limits, output protection, null categories, and CLI/config execution from
+another working directory. Actual LIS-L data, EDDIE publication, legends and browser
+interaction require separate acceptance checks in the following steps.
