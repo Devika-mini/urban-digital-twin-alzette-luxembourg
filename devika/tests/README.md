@@ -15,3 +15,8 @@ preserves full cell geometry and every attribute, including extra percentage fie
 They cover geographic GeoJSON and projected inputs, AOI holes, boundary contacts,
 percentage/identifier validation, source checksum preservation and CLI execution.
 No real ownership dataset has been processed in the cloud workspace.
+
+Land-cover inspection tests use synthetic INSPIRE-style nested XML and gzip files.
+They cover classification links, geometry metadata, missing class fields, bounded
+reads, source preservation, no GFS creation, external entity rejection and CLI use.
+They do not verify the user's actual land-cover classification schema or export.

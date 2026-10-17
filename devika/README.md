@@ -3,7 +3,8 @@
 ## Status and first milestone
 
 Standalone land-use and ownership preparation are implemented with synthetic tests.
-The cadastral command remains a placeholder; land-cover investigation is deferred. Styles, EDDIE ingestion and frontend
+The cadastral command remains a placeholder. A bounded raw-XML land-cover inspector
+is available; land-cover export awaits verification of the actual classification schema. Styles, EDDIE ingestion and frontend
 configuration are deferred to subsequent steps. The user validated a real LIS-L export on their Mac: 1,959 clipped polygons in
 EPSG:4326, 5,566,016 bytes, with 6 relevant polygon-part repairs. Ownership remains
 unverified on real data. No layer has been published by this work.
@@ -259,6 +260,61 @@ IDs fail, nulls/numeric strings are preserved, and the CLI works outside repo ro
 cover must be identified independently after confirmation; do not substitute LIS-L
 land use for land cover. EDDIE publication planning for three layers is deferred
 until all three datasets have passed validation.
+
+## Land-cover GML inspection (before preparation)
+
+The user's local metadata inspection found these layers in
+`data/raw/landcover/lc.lisl-landcover2024-luxembourg.gml.gz`:
+
+- `LandCoverDataset`: one metadata record describing LIS-L Land Cover 2024.
+- `LandCoverUnit`: 469,288 features; source CRS EPSG:3035; OGR geometry type Unknown.
+- Reported EPSG:4326 bounds: approximately 5.990724, 49.511251, 6.317782, 49.698323.
+  These bounds include our test AOI but do not establish complete feature coverage.
+  This is a regional extract despite the national parent metadata; the filename
+  alone must not be interpreted as national coverage.
+- The basic GML driver exposed identifiers and generic metadata, but no `LC2024`
+  field or legend table. Robin's GDB layer/field assumptions are not verified for
+  this GML and must not be copied blindly.
+
+The source is on the user's Mac, not in the cloud workspace. Before implementing
+conversion, inspect the nested XML directly with the versioned command below:
+
+```bash
+python devika/scripts/inspect_landcover.py \
+  --source data/raw/landcover/lc.lisl-landcover2024-luxembourg.gml.gz
+```
+
+The command reads `.gml` or `.gml.gz` sequentially, without extracting the gzip to
+disk or rescanning the entire dataset for counts. It stops after three complete
+`LandCoverUnit` elements by default, with a 64 MiB decompressed scan limit. It
+preserves the source and creates no GFS sidecar or geometry export. It does not
+fetch remote schema files, legends or linked classifications. No extra dependency
+installation is needed beyond the existing preparation environment.
+
+An ignored `outputs/landcover_inspection-<timestamp>.json` report records:
+
+- XML namespaces and schema-location attributes;
+- encountered dataset metadata and nomenclature references;
+- nested unit field paths, values, attributes and links;
+- candidate class fields (heuristic suggestions, not verified classifications);
+- sampled GML geometry element types, CRS identifiers and a few coordinate tokens;
+- sample size, bytes read, source file metadata and any field-text truncation.
+
+The Terminal prints a compact report including the first unit's nongeometry fields.
+Share that output or the small JSON report for review. Large coordinate arrays are
+omitted. A sample cannot prove national feature counts, full geometry validity,
+complete class coverage or an official code-to-label mapping. If metadata appears
+after the sampled units, it will not be included. If a record exceeds the default
+scan budget, the inspector fails rather than silently reading the whole file;
+`--max-scan-mb` may be increased deliberately, up to 1024. `--sample-units` controls
+sample count (1–100). Malformed/truncated XML and unsupported DTD/entity declarations
+produce explicit errors.
+
+After the actual code paths and legend have been verified, the preparation command
+can reuse the tested clipping/repair/export workflow while retaining original
+land-cover codes and joining verified readable labels. **No land-cover preparation
+or EDDIE ingestion command is implemented by this inspection step.** Do not use
+the generic dataset title as a feature class or substitute land-use categories.
 
 ## Verified EDDIE integration contract
 
