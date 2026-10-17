@@ -64,7 +64,9 @@ python -m pytest devika/tests -q
 
 The dependency ranges allow current compatible wheels. Validation in this cloud
 checkout used Python 3.12, GeoPandas 1.2.0, Shapely 2.2.0 and Pyogrio 0.13.0; this is
-not a frozen lockfile or a verified Mac installation.
+not a frozen lockfile. The user also installed these dependencies and passed the
+original 21 tests on an Apple silicon Mac with Python 3.14.3; the current clipping
+changes still require the local test run below.
 
 Place the original GeoPackage under ignored `devika/data/` or use an absolute path.
 For an initial small test, the following bbox is an **example**, not a permanent
@@ -108,49 +110,75 @@ take precedence. `--help` lists available arguments.
 
 The implementation:
 
-1. Inspects the configured source layer and requires `LU1_level__3_name` by default.
-2. Transforms the subset bounding box into the source CRS before spatial reading.
-   It reads at most the candidate limit plus one feature and fails if exceeded.
-   The default is 50,000 candidates; reduce the AOI or explicitly set
-   `--max-features` if appropriate. There is no silent truncation.
-3. Rejects missing CRS, empty selections, invalid/null/empty/non-polygon geometry,
-   and all-null category columns. By default it does not repair geometries; it
-   never guesses CRS or silently discards rows.
-   Validation covers the selected candidates, not the entire national dataset.
-4. Selects **whole polygons intersecting the AOI**, preserving source attributes.
-   It does not clip polygon boundaries, calculate AOI statistics, or remap labels.
-5. Reprojects to EPSG:4326 and exports GeoJSON. A temporary round trip checks
-   geometry, EPSG, feature count, attribute names and category values before output
-   is published. Source field types may follow GeoJSON's serialization conventions.
-6. Writes `outputs/alzette_landuse_2024.geojson` and a `.report.json` sidecar with
-   source/selection metadata, counts, categories, missing/blank category counts,
-   output bounds and library versions. Partial null/blank categories are preserved
-   for a later unknown-category styling rule.
+1. Requires a configurable AOI file or a bbox with an explicit CRS, and the source
+   `LU1_level__3_name` field. It never guesses a missing CRS.
+2. Transforms the AOI bounds into the source CRS and reads spatial candidates.
+   **The driver still reads whole national MultiPolygon features**, but polygon
+   components with envelopes outside the AOI envelope are excluded before expensive
+   validity checks and repair. Progress messages identify reading, clipping, repair
+   and export validation stages.
+3. Checks locally relevant polygon parts, optionally repairs invalid parts with
+   `--repair-invalid`, and intersects their actual geometry with the AOI. This
+   replaces the earlier whole-feature selection that produced oversized GeoJSON.
+4. Reprojects clipped pieces to EPSG:4326, intersects again with the AOI represented
+   in that CRS, and writes individual Polygon features. Source attributes are
+   repeated unchanged for each split piece. No category remapping or AOI statistics
+   are calculated. Zero-area boundary contacts are excluded and recorded.
+5. Serializes full-precision GeoJSON with right-hand polygon winding, then reads it
+   independently through GDAL/Pyogrio. Checks include EPSG, valid nonempty polygons,
+   feature count, attribute names, category values and AOI containment (including
+   holes). A tolerance of 2e-9 degrees, roughly 0.2 mm, accommodates numerical error;
+   it is not an AOI expansion for selecting features.
+6. Enforces a default **25 MiB total file** and **4 MiB serialized-feature** limit
+   before GDAL reads the export. These can be configured through `output.max_file_mb`,
+   `output.max_feature_mb`, `--max-output-mb` or `--max-feature-mb`. Prefer reducing
+   the AOI if either limit is exceeded. The `--max-features` limit (default 50,000)
+   caps both source candidates and final polygon pieces without silent truncation.
+7. Writes the validated GeoJSON and a `.report.json` sidecar under `outputs/`.
+   The report includes source and output counts, categories, CRS, AOI/output bounds,
+   byte sizes, validation results, excluded components, repairs and versions.
+   The Terminal prints a compact summary; full per-part records stay in the sidecar.
+   `output_feature_lineage` maps each output row (zero-based list position) back to
+   a source FID and source polygon-part index. Category counts are **output polygon
+   piece counts**, not original national feature counts. GeoJSON field types follow
+   JSON conventions; date/time values are represented as ISO strings.
 
 Existing outputs or reports are never overwritten: select a new `--output` name
-for a rerun. A missing source or rejected input exits nonzero. GeoJSON outputs and
-reports remain under ignored `outputs/`.
+for a rerun. On failure, no validated GeoJSON is published; a uniquely named
+`.failure-<timestamp>.json` retains the error and any accumulated repair diagnostics.
+Inspect that file and the progress output before retrying. Temporary exports are
+removed automatically. All outputs/reports remain in ignored `outputs/` by default.
 
 ### Explicit geometry repair
 
 The user's local LIS-L sample contains 53 MultiPolygon candidates in EPSG:2169;
-21 report ring self-intersections. After diagnosing such errors, opt in with
-`--repair-invalid` on the same preparation command. This applies Shapely
-`make_valid` (linework) in the source CRS to invalid candidate polygons **in memory**.
-The original GeoPackage is never written. The default remains strict rejection.
+21 whole features report ring self-intersections. Many components may be outside
+the AOI, so the new part-level repair count need not equal 21. Use:
 
-The report records each repaired source FID, original validity reason, geometry
-types and before/after areas in source CRS units squared, plus Shapely/GEOS versions.
-For EPSG:2169 these area units are square metres. Invalid original areas are only
-diagnostics, not accurate reference measurements. Records cover all repaired spatial
-candidates before exact AOI selection; some may not appear in the final export.
-Repairs may change geometry type or polygon parts, so inspect the result visually.
+```bash
+python devika/scripts/prepare_landuse.py \
+  --source data/landuse-luxembourg-07-15-18-21-24.gpkg \
+  --bbox 6.115 49.548 6.178 49.597 --bbox-crs EPSG:4326 \
+  --repair-invalid --output outputs/alzette_landuse_2024_clipped.geojson
+```
 
-Empty, non-polygon or GeometryCollection results stop the export. No collapsed
-lines/points or other components are silently removed. Missing, empty and
-non-polygon inputs also remain errors. AOI geometries are not automatically repaired.
-The local national dataset's repair outcome is still unverified in the cloud; tests
-use synthetic self-intersections and collapsed-component cases.
+`make_valid` (linework) runs on locally relevant invalid polygon parts in the source
+CRS, entirely in memory. The source GeoPackage is never written. Without the flag,
+invalid relevant parts remain errors. Remote parts are not validated. AOI geometries
+must already be valid and are never automatically repaired.
+
+Each attempted repair records source FID/part index, original validity reason,
+status, original/result type, polygon-piece count and before/after area in source
+CRS squared units. EPSG:2169 uses square metres; invalid pre-repair areas are only
+diagnostics, not reliable reference measurements. GeometryCollection results retain
+all polygon components; collapsed lines/points are omitted **with their types/counts
+recorded explicitly**. A repair with no valid polygon area fails. Clipping-created
+nonpolygon contacts are similarly recorded, and no source attributes are discarded.
+
+Tests use synthetic multipart, self-intersecting, collapsed, holed and disconnected
+geometries, with geographic and projected AOIs. The real LIS-L file remains on the
+user's Mac: its clipped export has not yet been verified in the cloud. Review the
+report and inspect the local output before proceeding to EDDIE integration.
 
 Preparation does not copy anything into EDDIE or contact PostGIS/GeoServer. That is
 Step 3. Styles must be based on observed category values, not guessed labels.

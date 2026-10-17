@@ -6,7 +6,7 @@ from pathlib import Path
 
 import geopandas as gpd
 import pytest
-from shapely.geometry import Polygon, box, Point
+from shapely.geometry import Polygon, MultiPolygon, box, Point
 
 from devika.src.landuse import PreparationError, make_subset, prepare_landuse, validate_polygons
 
@@ -47,7 +47,7 @@ def test_projected_source_attributes_coordinates_and_report(source, tmp_path):
     assert json.loads((tmp_path / "subset.report.json").read_text()) == report
 
 
-def test_polygon_aoi_filters_bbox_candidates_without_clipping(source, tmp_path):
+def test_polygon_aoi_clips_instead_of_retaining_whole_features(source, tmp_path):
     # Triangle bbox includes both polygons, but triangle only intersects the first.
     aoi = gpd.GeoDataFrame(geometry=[Polygon([(6.119, 49.54), (6.151, 49.54), (6.119, 49.56)])], crs=4326)
     aoi_path = tmp_path / "aoi.geojson"
@@ -56,7 +56,8 @@ def test_polygon_aoi_filters_bbox_candidates_without_clipping(source, tmp_path):
     result = gpd.read_file(tmp_path / "subset.geojson")
     assert report["feature_count"] == 1
     assert result["source_id"].tolist() == [11]
-    assert result.total_bounds == pytest.approx([6.12, 49.55, 6.13, 49.56], abs=1e-6)
+    assert result.geometry.covered_by(aoi.geometry[0].buffer(2e-9)).all()
+    assert sum(polygon.area for polygon in result.geometry) < box(6.12, 49.55, 6.13, 49.56).area
 
 
 @pytest.mark.parametrize("kwargs, message", [
@@ -162,22 +163,23 @@ def test_opt_in_repair_preserves_source_and_attributes(tmp_path):
     report = run(source, tmp_path, repair_invalid=True)
     result = gpd.read_file(tmp_path / "subset.geojson")
     assert result.geometry.is_valid.all()
-    assert result.record_id.tolist() == [42]
+    assert result.record_id.tolist() == [42, 42]
     assert report["geometry_repairs"] == 1
     assert report["repair_records"][0]["source_fid"] == 1
     assert "Self-intersection" in report["repair_records"][0]["reason"]
     assert hashlib.sha256(source.read_bytes()).hexdigest() == before
 
 
-def test_repair_refuses_collapsed_components(tmp_path):
+def test_repair_records_collapsed_components(tmp_path):
     source = tmp_path / "spike.gpkg"
-    # A valid square plus an outward spike; make_valid returns polygon + line.
     geometry = Polygon([(6.12, 49.55), (6.13, 49.55), (6.14, 49.55),
                         (6.13, 49.55), (6.13, 49.56), (6.12, 49.56), (6.12, 49.55)])
     gpd.GeoDataFrame({FIELD: ["Residential"]}, geometry=[geometry], crs=4326).to_file(source, layer=LAYER)
-    with pytest.raises(PreparationError, match="No components were discarded"):
-        run(source, tmp_path, repair_invalid=True)
-    assert not (tmp_path / "subset.geojson").exists()
+    report = run(source, tmp_path, repair_invalid=True)
+    assert report["repair_records"][0]["excluded_nonpolygon_components"] == {"LineString": 1}
+    result = gpd.read_file(tmp_path / "subset.geojson")
+    assert result.geometry.is_valid.all()
+    assert result.geometry.geom_type.tolist() == ["Polygon"]
 
 
 def test_cli_repair_flag(tmp_path):
@@ -191,3 +193,99 @@ def test_cli_repair_flag(tmp_path):
     ], cwd=tmp_path, capture_output=True, text=True)
     assert process.returncode == 0, process.stderr
     assert json.loads(process.stdout)["geometry_repairs"] == 1
+
+
+def test_remote_multipart_parts_not_repaired_or_exported(tmp_path):
+    import hashlib
+    source = tmp_path / "national.gpkg"
+    remote_invalid = Polygon([(8, 51), (9, 52), (9, 51), (8, 52), (8, 51)])
+    geometry = MultiPolygon([box(6.10, 49.54, 6.2, 49.6), remote_invalid])
+    gpd.GeoDataFrame({FIELD: ["Grassland"], "original_id": [99], "info": ["keep me"]},
+                    geometry=[geometry], crs=4326).to_file(source, layer=LAYER)
+    checksum = hashlib.sha256(source.read_bytes()).hexdigest()
+    report = run(source, tmp_path)  # remote invalid part should not require repairs
+    result = gpd.read_file(tmp_path / "subset.geojson")
+    aoi = box(6.119, 49.549, 6.151, 49.561)
+    assert result.geometry.covered_by(aoi).all()
+    assert result.geometry[0].equals(aoi)
+    assert result.original_id.tolist() == [99]
+    assert result["info"].tolist() == ["keep me"]
+    assert report["parts_skipped_outside_aoi_bounds"] == 1
+    assert report["geometry_repairs"] == 0
+    assert report["file_size_bytes"] == (tmp_path / "subset.geojson").stat().st_size
+    assert report["file_size_bytes"] < 5000
+    assert report["output_within_aoi"]
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == checksum
+
+
+@pytest.mark.parametrize("crs", [4326, 2169])
+def test_aoi_holes_and_disjoint_regions_contain_all_exports(tmp_path, crs):
+    source = tmp_path / "wide.gpkg"
+    gpd.GeoDataFrame({FIELD: ["Forest"]}, geometry=[box(6.1, 49.5, 6.2, 49.7)], crs=4326).to_crs(2169).to_file(source, layer=LAYER)
+    ring = Polygon(box(6.12, 49.55, 6.14, 49.57).exterior.coords,
+                   holes=[box(6.125, 49.555, 6.135, 49.565).exterior.coords])
+    aoi = gpd.GeoDataFrame(geometry=[ring, box(6.15, 49.55, 6.16, 49.56)], crs=4326).to_crs(crs)
+    aoi_path = tmp_path / "aoi.gpkg"
+    aoi.to_file(aoi_path)
+    report = prepare_landuse(source, tmp_path / "subset.geojson", aoi_path=aoi_path)
+    result = gpd.read_file(tmp_path / "subset.geojson")
+    mask = aoi.to_crs(4326).geometry.union_all()
+    assert result.geometry.covered_by(mask.buffer(2e-9)).all()
+    assert result.geometry.is_valid.all()
+    assert report["feature_count"] == 2
+    assert sum(len(polygon.interiors) for polygon in result.geometry) == 1
+    assert result[FIELD].tolist() == ["Forest", "Forest"]
+
+
+def test_different_bboxes_change_actual_geometry(tmp_path):
+    source = tmp_path / "wide.gpkg"
+    gpd.GeoDataFrame({FIELD: ["Grassland"]}, geometry=[box(6, 49, 7, 50)], crs=4326).to_file(source, layer=LAYER)
+    for i, bounds in enumerate(([6.12, 49.55, 6.13, 49.56], [6.14, 49.57, 6.15, 49.58])):
+        output = tmp_path / f"aoi_{i}.geojson"
+        prepare_landuse(source, output, bbox=bounds, bbox_crs=4326)
+        result = gpd.read_file(output)
+        assert result.geometry[0].equals(box(*bounds))
+
+
+@pytest.mark.parametrize("limits", [{"max_output_mb": 0.00001}, {"max_feature_mb": 0.00001}])
+def test_export_size_limits_leave_only_failure_diagnostics(source, tmp_path, limits):
+    with pytest.raises(PreparationError, match="limit"):
+        run(source, tmp_path, **limits)
+    assert not (tmp_path / "subset.geojson").exists()
+    assert not (tmp_path / "subset.report.json").exists()
+    failure = json.loads(next(tmp_path.glob("*.failure-*.json")).read_text())
+    assert failure["status"] == "failed"
+    assert "limit" in failure["error"]
+
+
+def test_repair_failure_is_recorded_without_export(tmp_path):
+    source = tmp_path / "collapsed.gpkg"
+    geometry = Polygon([(6.12, 49.55), (6.13, 49.55), (6.14, 49.55), (6.12, 49.55)])
+    gpd.GeoDataFrame({FIELD: ["Forest"]}, geometry=[geometry], crs=4326).to_file(source, layer=LAYER)
+    with pytest.raises(PreparationError, match="no valid polygonal result"):
+        run(source, tmp_path, repair_invalid=True)
+    failure = json.loads(next(tmp_path.glob("*.failure-*.json")).read_text())
+    assert failure["repair_records"][0]["status"].startswith("failed")
+    assert not (tmp_path / "subset.geojson").exists()
+
+
+def test_boundary_touch_does_not_export_line_geometry(tmp_path):
+    source = tmp_path / "touch.gpkg"
+    gpd.GeoDataFrame({FIELD: ["Forest", "Grassland"]},
+                    geometry=[box(6.1, 49.55, 6.12, 49.56), box(6.12, 49.55, 6.13, 49.56)],
+                    crs=4326).to_file(source, layer=LAYER)
+    report = prepare_landuse(source, tmp_path / "subset.geojson",
+                             bbox=[6.12, 49.55, 6.14, 49.57], bbox_crs=4326)
+    result = gpd.read_file(tmp_path / "subset.geojson")
+    assert result[FIELD].tolist() == ["Grassland"]
+    assert report["geometry_events"][0]["excluded_nonpolygon_components"] == {"LineString": 1}
+
+
+def test_serialization_preserves_subcentimetre_aoi_boundaries(tmp_path):
+    source = tmp_path / "fine.gpkg"
+    gpd.GeoDataFrame({FIELD: ["Forest"]}, geometry=[box(6, 49, 7, 50)], crs=4326).to_file(source, layer=LAYER)
+    bounds = [6.123456789123, 49.543210987654, 6.124567891234, 49.554321098765]
+    prepare_landuse(source, tmp_path / "subset.geojson", bbox=bounds, bbox_crs=4326)
+    result = gpd.read_file(tmp_path / "subset.geojson")
+    assert result.geometry.covered_by(box(*bounds)).all()
+    assert result.total_bounds == pytest.approx(bounds, abs=1e-12, rel=0)
