@@ -173,6 +173,7 @@ def _prepare_landuse(
     if len(candidates) > max_features:
         raise PreparationError(f"Subset exceeds the {max_features}-candidate limit; choose a smaller AOI.")
     audit["candidate_count"] = len(candidates)
+    audit["source_candidates_with_z"] = int(candidates.geometry.has_z.sum())
     source_aoi = subset.to_crs(source_crs).geometry.union_all()
     # Also clip after reprojection: transformed straight edges are not identical
     # in different CRSs. This enforces the user's AOI in the exported CRS.
@@ -245,7 +246,12 @@ def _prepare_landuse(
     # Copy source rows in output order; FID remains in sidecar, not a new user attribute.
     result = candidates.iloc[row_positions].copy().reset_index(drop=True)
     result = result.drop(columns=result.geometry.name)
-    result = gpd.GeoDataFrame(result, geometry=output_polygons, crs=4326)
+    audit["output_pieces_with_z_removed"] = sum(bool(polygon.has_z) for polygon in output_polygons)
+    audit["output_dimension"] = "XY; terrain supplies display elevation"
+    # Land-use overlays use horizontal coordinates; source Z is not the DEM.
+    # GDAL interprets 3D WGS84 GeoJSON as EPSG:4979, so make the promised 2D
+    # EPSG:4326 export explicit while leaving source geometry/attributes untouched.
+    result = gpd.GeoDataFrame(result, geometry=[shapely.force_2d(p) for p in output_polygons], crs=4326)
     validate_polygons(result, "Clipped land use")
     check_containment(result, output_aoi)
     xmin, ymin, xmax, ymax = result.total_bounds
@@ -298,10 +304,19 @@ def _prepare_landuse(
         if feature_bytes > max_feature_mb * 1024**2:
             raise PreparationError(f"A clipped feature is {feature_bytes} bytes; limit is {max_feature_mb} MiB. Reduce the AOI.")
         restored = gpd.read_file(temporary, engine="pyogrio")
+        round_trip = {"expected_crs": "EPSG:4326", "observed_crs": str(restored.crs),
+                      "expected_feature_count": len(result), "observed_feature_count": len(restored),
+                      "observed_z_feature_count": int(restored.geometry.has_z.sum())}
+        audit["round_trip"] = round_trip
+        report["round_trip"] = round_trip
+        if restored.crs is None or restored.crs.to_epsg() != 4326:
+            raise PreparationError(f"Export CRS mismatch: expected EPSG:4326, observed {restored.crs}.")
+        if len(restored) != len(result):
+            raise PreparationError(f"Export feature count mismatch: expected {len(result)}, observed {len(restored)}.")
+        if restored.geometry.has_z.any():
+            raise PreparationError("Export dimension mismatch: expected XY, observed Z coordinates.")
         validate_polygons(restored, "Export round trip")
         check_containment(restored, output_aoi)
-        if restored.crs.to_epsg() != 4326 or len(restored) != len(result):
-            raise PreparationError("Export round trip changed CRS or feature count.")
         expected_categories = [None if value is None or pd.isna(value) else value for value in categories]
         if [feature["properties"].get(category_field) for feature in features] != expected_categories:
             raise PreparationError("Export round trip changed category values.")

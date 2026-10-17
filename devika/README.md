@@ -121,7 +121,11 @@ The implementation:
    `--repair-invalid`, and intersects their actual geometry with the AOI. This
    replaces the earlier whole-feature selection that produced oversized GeoJSON.
 4. Reprojects clipped pieces to EPSG:4326, intersects again with the AOI represented
-   in that CRS, and writes individual Polygon features. Source attributes are
+   in that CRS, and writes individual **2D (XY)** Polygon features. Source geometry
+   Z coordinates are removed only in the exported copy: the existing terrain
+   supplies display elevation. Height attribute columns remain unchanged. The
+   report records `source_candidates_with_z` and `output_pieces_with_z_removed`.
+   This avoids GDAL interpreting a 3D GeoJSON as EPSG:4979 instead of EPSG:4326. Source attributes are
    repeated unchanged for each split piece. No category remapping or AOI statistics
    are calculated. Zero-area boundary contacts are excluded and recorded.
 5. Serializes full-precision GeoJSON with right-hand polygon winding, then reads it
@@ -146,7 +150,9 @@ The implementation:
 Existing outputs or reports are never overwritten: select a new `--output` name
 for a rerun. On failure, no validated GeoJSON is published; a uniquely named
 `.failure-<timestamp>.json` retains the error and any accumulated repair diagnostics.
-Inspect that file and the progress output before retrying. Temporary exports are
+Inspect that file and the progress output before retrying. A `round_trip` section
+records expected and observed CRS, feature counts and Z-coordinate counts when
+the read-back stage is reached. Temporary exports are
 removed automatically. All outputs/reports remain in ignored `outputs/` by default.
 
 ### Explicit geometry repair

@@ -289,3 +289,47 @@ def test_serialization_preserves_subcentimetre_aoi_boundaries(tmp_path):
     result = gpd.read_file(tmp_path / "subset.geojson")
     assert result.geometry.covered_by(box(*bounds)).all()
     assert result.total_bounds == pytest.approx(bounds, abs=1e-12, rel=0)
+
+
+@pytest.mark.parametrize("source_crs", [4326, 2169])
+def test_3d_source_exports_2d_4326_overlay_with_attributes(tmp_path, source_crs):
+    import hashlib
+    source = tmp_path / "landuse_z.gpkg"
+    polygon = Polygon([(6.10, 49.54, 210), (6.20, 49.54, 220),
+                       (6.20, 49.60, 230), (6.10, 49.60, 240), (6.10, 49.54, 210)])
+    gpd.GeoDataFrame({FIELD: ["Forest"], "height_attribute": [210], "source_id": [81]},
+                    geometry=[MultiPolygon([polygon])], crs=4326).to_crs(source_crs).to_file(source, layer=LAYER)
+    before = hashlib.sha256(source.read_bytes()).hexdigest()
+    report = run(source, tmp_path)
+    restored = gpd.read_file(tmp_path / "subset.geojson")
+    assert restored.crs.to_epsg() == 4326
+    assert not restored.geometry.has_z.any()
+    assert restored.height_attribute.tolist() == [210]
+    assert restored.source_id.tolist() == [81]
+    assert restored[FIELD].tolist() == ["Forest"]
+    assert restored.geometry.covered_by(box(6.119, 49.549, 6.151, 49.561).buffer(2e-9)).all()
+    assert report["source_candidates_with_z"] == 1
+    assert report["output_pieces_with_z_removed"] == 1
+    assert report["round_trip"]["observed_crs"] == "EPSG:4326"
+    assert report["round_trip"]["observed_feature_count"] == report["feature_count"]
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == before
+
+
+@pytest.mark.parametrize("mismatch", ["crs", "count"])
+def test_round_trip_failure_reports_observed_values(source, tmp_path, monkeypatch, mismatch):
+    original_read = gpd.read_file
+    def altered_read(*args, **kwargs):
+        frame = original_read(*args, **kwargs)
+        if mismatch == "crs":
+            return frame.set_crs(4979, allow_override=True)
+        return frame.iloc[:1]
+    monkeypatch.setattr(gpd, "read_file", altered_read)
+    with pytest.raises(PreparationError, match="expected .*observed"):
+        run(source, tmp_path)
+    diagnostic = json.loads(next(tmp_path.glob("*.failure-*.json")).read_text())["round_trip"]
+    assert diagnostic["expected_feature_count"] == 2
+    if mismatch == "crs":
+        assert diagnostic["observed_crs"] == "EPSG:4979"
+    else:
+        assert diagnostic["observed_feature_count"] == 1
+    assert not (tmp_path / "subset.geojson").exists()
