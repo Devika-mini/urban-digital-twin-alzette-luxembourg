@@ -24,7 +24,10 @@ INTERPRETATION = (
 )
 
 
-def validate_attributes(frame, required_fields):
+def validate_attributes(frame, required_fields, *, percentage_tolerance=0):
+    if (isinstance(percentage_tolerance, bool) or not math.isfinite(percentage_tolerance)
+            or not 0 <= percentage_tolerance < 1):
+        raise PreparationError("percentage_tolerance must be finite and at least 0 but less than 1 percentage point.")
     missing = set(REQUIRED_FIELDS).union(required_fields) - set(frame.columns)
     if missing:
         raise PreparationError(f"Missing ownership attributes: {', '.join(sorted(missing))}")
@@ -40,7 +43,7 @@ def validate_attributes(frame, required_fields):
         if values.dropna().map(lambda value: isinstance(value, bool)).any():
             raise PreparationError(f"{field}: boolean values are not ownership percentages.")
         numeric = pd.to_numeric(values, errors="coerce")
-        invalid = values.notna() & (numeric.isna() | ~numeric.between(0, 100))
+        invalid = values.notna() & (numeric.isna() | ~numeric.between(-percentage_tolerance, 100 + percentage_tolerance))
         if invalid.any():
             raise PreparationError(f"{field}: {int(invalid.sum())} nonnumeric, non-finite or out-of-range percentages (expected 0–100).")
         summaries[field] = {
@@ -48,6 +51,10 @@ def validate_attributes(frame, required_fields):
             "max": float(numeric.max()) if numeric.notna().any() else None,
             "null_count": int(values.isna().sum()),
             "numeric_string_count": int(values.map(lambda value: isinstance(value, str)).sum()),
+            "rounding_exceptions": [
+                {"TOP_LEFT": str(frame.loc[index, "TOP_LEFT"]), "value": float(numeric.loc[index])}
+                for index in frame.index[values.notna() & ~numeric.between(0, 100)]
+            ],
         }
     if frame["PUBLIC_PERCENT"].isna().all():
         raise PreparationError("PUBLIC_PERCENT is missing for every selected cell.")
@@ -79,7 +86,7 @@ def prepare_ownership(source, output, **kwargs):
 
 def _prepare_ownership(source, output, *, audit, all_features=False, bbox=None, bbox_crs=None, aoi_path=None,
                        required_fields=REQUIRED_FIELDS, max_features=50000,
-                       max_output_mb=25, max_feature_mb=4):
+                       max_output_mb=25, max_feature_mb=4, percentage_tolerance=0):
     source, output = Path(source).resolve(), Path(output).resolve()
     report_path = output.with_suffix(".report.json")
     if not source.is_file():
@@ -113,9 +120,10 @@ def _prepare_ownership(source, output, *, audit, all_features=False, bbox=None, 
     source_aoi = None if all_features else subset.to_crs(source_crs).geometry.union_all()
     selected = candidates.copy() if all_features else candidates.loc[candidates.intersects(source_aoi)].copy()
     validate_polygons(selected, "Selected ownership cells")
-    percentages = validate_attributes(selected, required_fields)
+    percentages = validate_attributes(selected, required_fields, percentage_tolerance=percentage_tolerance)
     audit.update(source_crs=source_crs.to_string(), candidate_count=len(candidates),
                  feature_count=len(selected), percentage_validation=percentages,
+                 percentage_tolerance=percentage_tolerance,
                  source_fids=[int(fid) for fid in selected.index])
     # Complete horizontal footprints are retained; do not clip, explode or repair.
     output_z_count = int(selected.geometry.has_z.sum())
@@ -147,6 +155,13 @@ def _prepare_ownership(source, output, *, audit, all_features=False, bbox=None, 
     if all_features:
         report["selection"]["method"] = "all source cells; complete original cells retained"
         report["interpretation"] = INTERPRETATION.replace("Cells are selected by intersection", "All source cells are selected")
+    rounding_count = sum(len(stats["rounding_exceptions"]) for stats in percentages.values())
+    if rounding_count:
+        report["warnings"].append(
+            f"{rounding_count} percentage value(s) outside 0–100 accepted with explicit "
+            f"{percentage_tolerance}-percentage-point rounding tolerance; original values preserved. "
+            "See percentage_validation rounding_exceptions."
+        )
     if nominal_deviations:
         report["warnings"].append("Some cell areas differ from nominal 1 km² by more than 1%; original footprints retained for review.")
     if any(stats["null_count"] for stats in percentages.values()):
@@ -176,7 +191,7 @@ def _prepare_ownership(source, output, *, audit, all_features=False, bbox=None, 
         if restored.crs is None or restored.crs.to_epsg() != 4326 or len(restored) != len(result):
             raise PreparationError(f"Ownership export read-back mismatch: {audit['round_trip']}")
         validate_polygons(restored, "Ownership round trip")
-        validate_attributes(restored, required_fields)
+        validate_attributes(restored, required_fields, percentage_tolerance=percentage_tolerance)
         if not shapely.equals_exact(result.geometry.array, restored.geometry.array, tolerance=1e-12).all():
             raise PreparationError("Round trip changed complete cell geometry.")
         restored_properties = json.loads(restored.to_json(drop_id=True, default=encode_attribute))["features"]

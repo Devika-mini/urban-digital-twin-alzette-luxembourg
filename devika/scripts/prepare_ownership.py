@@ -47,6 +47,7 @@ def main(argv=None):
     parser.add_argument("--max-features", type=int, help="Maximum spatial candidates to read (default 50000).")
     parser.add_argument("--max-output-mb", type=float, help="Maximum GeoJSON size in MiB (default 25).")
     parser.add_argument("--max-feature-mb", type=float, help="Maximum serialized feature size in MiB (default 4).")
+    parser.add_argument("--percentage-tolerance", type=float, default=0, help="Explicit rounding tolerance in percentage points (0 <= value < 1); default 0. Preserve and audit out-of-range values.")
     args = parser.parse_args(argv)
     try:
         config = yaml.safe_load((DEVIKA_ROOT / "config.yaml").read_text())
@@ -76,6 +77,7 @@ def main(argv=None):
             source_path,
             resolve_path(args.output or str(Path(output["directory"]) / "alzette_ownership_2019.geojson")),
             required_fields=source["fields"], all_features=args.all_features,
+            percentage_tolerance=args.percentage_tolerance,
             bbox=bbox, bbox_crs=None if args.all_features else args.bbox_crs or subset["bbox_crs"], aoi_path=resolve_path(aoi),
             max_output_mb=args.max_output_mb if args.max_output_mb is not None else output.get("max_file_mb", 25),
             max_feature_mb=args.max_feature_mb if args.max_feature_mb is not None else output.get("max_feature_mb", 4),

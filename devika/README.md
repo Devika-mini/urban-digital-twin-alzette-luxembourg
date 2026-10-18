@@ -6,8 +6,11 @@ Standalone land-use and ownership preparation are implemented with synthetic tes
 The cadastral command remains a placeholder. A bounded raw-XML land-cover inspector
 is available; land-cover export awaits verification of the actual classification schema. Styles, EDDIE ingestion and frontend
 configuration are deferred to subsequent steps. The user validated a real LIS-L export on their Mac: 1,959 clipped polygons in
-EPSG:4326, 5,566,016 bytes, with 6 relevant polygon-part repairs. Ownership remains
-unverified on real data. No layer has been published by this work.
+EPSG:4326, 5,566,016 bytes, with 6 relevant polygon-part repairs. Full-source
+ownership was also validated locally: 2,790 source footprints and all 25
+attributes preserved. It has one explicitly audited rounding exception and
+361 below-nominal-area source footprints. See the local full-source results below.
+No layer has been published by this work.
 
 First milestone: one correctly styled LIS-L 2024 land-use layer over the existing
 EDDIE 3D terrain, with layer toggling, a legend, and clickable attributes. Ownership
@@ -193,16 +196,17 @@ Step 3. Styles must be based on observed category values, not guessed labels.
 
 ## Ownership preparation — full grid cells
 
-Ownership is a separate dataset from LIS-L. Place `owner-type-grid.geojson` in
-ignored `devika/data/` (or supply its absolute path). It is not present in the cloud
-workspace; no real-data ownership counts, CRS or schema are claimed yet.
+Ownership is a separate dataset from LIS-L. The verified local source is
+`devika/data/raw/ownership/owner-type-grid.geojson` (or supply its absolute path).
+Source datasets and exports stay local and ignored by Git. The full-source local
+validation and its warnings are recorded below.
 
 Reuse the same virtual environment and install requirements. From repository root:
 
 ```bash
 python -m pytest devika/tests -q
 python devika/scripts/prepare_ownership.py \
-  --source data/owner-type-grid.geojson \
+  --source data/raw/ownership/owner-type-grid.geojson \
   --bbox 6.115 49.548 6.178 49.597 --bbox-crs EPSG:4326 \
   --output outputs/alzette_ownership_2019.geojson
 ```
@@ -256,9 +260,9 @@ Synthetic tests verify full 1 km² cells survive tiny-AOI selection without clip
 source checksums remain unchanged, unknown percentage fields are preserved, polygon
 AOI holes filter correctly, boundary touches are included, invalid percentages and
 IDs fail, nulls/numeric strings are preserved, and the CLI works outside repo root.
-**Real ownership validation is pending.** Stop after this preparation step. Land
-cover must be identified independently after confirmation; do not substitute LIS-L
-land use for land cover. EDDIE publication planning for three layers is deferred
+Real full-source ownership validation is documented below. Land cover is outside
+the current ownership/land-use task; do not substitute LIS-L land use for land
+cover. EDDIE publication planning for three layers is deferred
 until all three datasets have passed validation.
 
 ## Land-cover GML inspection (before preparation)
@@ -391,8 +395,9 @@ before any later commit.
 
 Step 2 is tested using synthetic GeoPackages and AOI files, including projected
 coordinates, retained attributes, invalid inputs, candidate limits, and CLI use
-from another directory. No real source datasets, PostGIS ingestion, GeoServer
-styles, browser behaviour or DEM alignment were tested.
+from another directory. The local full-source dataset results below are separate
+from these synthetic tests. PostGIS ingestion, GeoServer styles, browser behaviour and DEM alignment
+have not been tested by this work.
 Cloud workspace changes do not automatically update the user's Mac or GitHub fork.
 
 ## Full Luxembourg source coverage: ownership and land use
@@ -406,16 +411,44 @@ From the repository root, activate `devika/.venv`, then run ownership first:
 
 ```bash
 python devika/scripts/prepare_ownership.py \
-  --source data/owner-type-grid.geojson \
+  --source data/raw/ownership/owner-type-grid.geojson \
   --all-features \
   --output outputs/luxembourg_ownership_2019.geojson
 ```
 
-If the source was moved into `data/raw/ownership/`, change `--source` accordingly.
-The output retains all original complete grid cells and all ownership attributes.
-Percentages describe those whole cells, not individual parcels. Existing geometry,
-percentage, grid-area and read-back checks still apply. Invalid cells stop the run;
-we do not repair or reshape ownership cells automatically.
+The local source was verified at `data/raw/ownership/owner-type-grid.geojson`.
+To locate it without modifying files, run from repository root:
+
+```bash
+rg --files --hidden --no-ignore devika/data/raw/ownership -g '*.geojson'
+```
+
+Strict percentage validation remains the default. The supplied full source contains
+one rounded aggregate, `PUBLIC_PERCENT = 100.00999999999999` for `TOP_LEFT = 0071-0098`.
+Its component percentages are 89.77, 9.13 and 1.11. To preserve this original value
+and accept the 0.01-percentage-point rounding excess, use this explicit option:
+
+```bash
+python devika/scripts/prepare_ownership.py \
+  --source data/raw/ownership/owner-type-grid.geojson \
+  --all-features --percentage-tolerance 0.01 \
+  --output outputs/luxembourg_ownership_2019.geojson
+```
+
+`--percentage-tolerance` defaults to zero and must be finite, nonnegative and less
+than one percentage point. It expands the accepted interval to `[-tolerance,
+100 + tolerance]` for percentage fields; nonnumeric, boolean and nonfinite values
+still fail. Every accepted value outside 0–100 is recorded with its field and
+`TOP_LEFT` identifier under `percentage_validation.*.rounding_exceptions` and raises
+a report warning. Values are never clamped, normalised or overwritten. Read-back
+uses the same explicit tolerance and compares all original attributes.
+
+The output retains all supplied source footprints and ownership attributes.
+Percentages describe those footprints, not individual parcels or ownership within
+an intersecting AOI. Existing geometry, percentage, area and read-back checks still
+apply. Invalid cells stop the run; ownership geometries are never repaired or
+reshaped automatically. Some source footprints are smaller than nominal 1 km²;
+the area check reports them without replacing their geometry.
 
 For the full 2024 land-use layer:
 
@@ -452,8 +485,85 @@ Use a new output directory when rerunning; automatic resume is not implemented.
 
 Tests cover distant polygon parts (no accidental test-AOI filtering), repairs,
 source preservation, completeness, failure manifests and full ownership selection.
-**The national production files are not available in the cloud workspace: actual
-national counts, sizes, runtimes and success remain to be verified on the Mac.**
+Rounding regression tests also check strict defaults, explicit tolerance,
+source/attribute preservation, exception diagnostics, CLI propagation and rejection
+of nonfinite values or excessive deviations. All 84 synthetic tests passed on the
+Mac; these tests are separate from the actual dataset results below.
+
 Keep all datasets, generated GeoJSONs and reports under the ignored data/output
 paths. Do not load all national files into the browser directly; publication and
 rendering strategy remain a later EDDIE integration task.
+
+### Local processing limits found on 18 October 2026
+
+The original full-source land-use run stopped after 80/92 source records because
+FID 81 (`Main roads`) contains an exported polygon of 81,787,865 bytes, exceeding
+the default 64 MiB feature limit. A second run using `--max-feature-mb 128` passed
+that guard but stopped at GDAL's separate GeoJSON read-back object-size limit.
+Both incomplete directories (`outputs/luxembourg_landuse_2024` and
+`outputs/luxembourg_landuse_2024_v2`) retain failed manifests and diagnostics.
+Do not ingest or treat either collection as complete.
+
+GDAL documents `OGR_GEOJSON_MAX_OBJ_SIZE=0` to remove its internal single-object
+limit ([GeoJSON driver documentation](https://gdal.org/en/stable/drivers/vector/geojson.html)).
+The rerun command sets this environment variable for that process only, after
+reviewing the measured polygon size. The preparation code still checks the 128 MiB
+serialized-feature limit and 512 MiB file limit before attempting GDAL read-back.
+No clipping, simplification or coordinate rounding is introduced to reduce size.
+
+```bash
+OGR_GEOJSON_MAX_OBJ_SIZE=0 python devika/scripts/prepare_national_landuse.py \
+  --source data/landuse-luxembourg-07-15-18-21-24.gpkg \
+  --repair-invalid --max-feature-mb 128 \
+  --output-directory outputs/luxembourg_landuse_2024_v3
+```
+
+A new output directory is required for every rerun. Reading the resulting large
+GeoJSON through GDAL also requires the object-size override; apply it only when
+reading these known, size-checked local outputs. Downstream publication must
+account for the large `Main roads` polygon in a later integration task.
+
+### Validated local full-source results — 18 October 2026
+
+These are actual dataset runs on the Mac, separate from the 84 synthetic tests.
+The successful land-use collection is **`outputs/luxembourg_landuse_2024_v3/`**.
+Its manifest and all 92 per-file reports have `status: validated`.
+
+| Check | Ownership | 2024 land use |
+| --- | --- | --- |
+| Source records included | 2,790 / 2,790 | 92 / 92 |
+| Exported polygons / cells | 2,790 source footprints | 144,319 polygon pieces |
+| GeoJSON files | 1 | 92 |
+| Total GeoJSON bytes | 3,141,967 | 494,890,432 |
+| Geometry repairs | 0 | 189 |
+| Output CRS | EPSG:4326 | EPSG:4326 |
+| Geometry validity / read-back counts | Passed | Passed for every file |
+| Source attributes | All 25 preserved | All 11 preserved, including classifications |
+
+The independent audit compared every exported attribute value against its source
+record, checked every source FID and polygon-part index, and verified valid XY
+geometry, CRS, per-file feature counts, sizes and aggregate manifest totals. The
+ownership audit also confirmed exact source geometry and identifier preservation.
+Source SHA-256 checksums matched the inventory captured before the national
+land-use runs. Full-source coverage means the supplied files, without AOI clipping;
+this is not an independent check against an official national boundary.
+
+Ownership has two retained warnings: one `PUBLIC_PERCENT` rounding exception
+(`0071-0098`, original value approximately 100.01) and 361 supplied footprints
+smaller than nominal 1 km² by more than 1%. Areas range from approximately
+30.11 m² to 1,000,000.014 m². The source footprints and percentage values were
+preserved, without repairs, clipping, normalisation or area weighting.
+
+Reports remain local and ignored by Git:
+
+- Ownership: `outputs/luxembourg_ownership_2019.report.json`.
+- Successful land use: `outputs/luxembourg_landuse_2024_v3/manifest.json` plus each
+  numbered `.report.json` sidecar.
+- Independent audit: `outputs/luxembourg_landuse_2024_v3.audit.json`.
+
+No lower-dimensional repair remnants were excluded. There were no null or blank
+classifications.
+The largest output file is `landuse_2024_0080.geojson` (82,336,263 bytes);
+its largest individual polygon is 81,787,865 bytes. All source attributes, including
+original `Shape_Area` and `Shape_Length`, remain source values. No EDDIE ingestion,
+GeoServer styling or frontend integration was performed.

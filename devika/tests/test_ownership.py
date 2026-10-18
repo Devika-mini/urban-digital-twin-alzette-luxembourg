@@ -197,3 +197,56 @@ def test_z_removal_preserves_complete_horizontal_footprint(source, tmp_path):
     assert result.crs.to_epsg() == 4326
     assert not result.geometry.has_z.any()
     assert result.geometry[0].equals_exact(shapely.force_2d(frame.to_crs(4326).geometry.iloc[0]), 1e-12)
+
+
+@pytest.mark.parametrize("value", [100.00999999999999, -0.01])
+def test_explicit_rounding_tolerance_preserves_and_audits_source(source, tmp_path, value):
+    frame = gpd.read_file(source)
+    frame.loc[0, "PUBLIC_PERCENT"] = value
+    path = tmp_path / "rounded.gpkg"
+    frame.to_file(path)
+    checksum = hashlib.sha256(path.read_bytes()).hexdigest()
+    with pytest.raises(PreparationError, match="percentages"):
+        run(path, tmp_path)
+    report = run(path, tmp_path, percentage_tolerance=0.01)
+    result = gpd.read_file(tmp_path / "ownership.geojson")
+    assert result.PUBLIC_PERCENT.iloc[0] == value
+    assert report["percentage_tolerance"] == 0.01
+    assert report["percentage_validation"]["PUBLIC_PERCENT"]["rounding_exceptions"] == [
+        {"TOP_LEFT": "78000_71000", "value": value}]
+    assert any("rounding tolerance" in warning for warning in report["warnings"])
+    assert report["all_attributes_preserved"]
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == checksum
+
+
+@pytest.mark.parametrize("value", [100.02, -0.02, float("inf"), "bad", True])
+def test_rounding_tolerance_still_rejects_bad_percentages(source, value):
+    from devika.src.ownership import REQUIRED_FIELDS, validate_attributes
+    frame = gpd.read_file(source)
+    frame["PUBLIC_PERCENT"] = frame["PUBLIC_PERCENT"].astype(object)
+    frame.at[0, "PUBLIC_PERCENT"] = value
+    with pytest.raises(PreparationError, match="percentages"):
+        validate_attributes(frame, REQUIRED_FIELDS, percentage_tolerance=0.01)
+
+
+@pytest.mark.parametrize("tolerance", [-0.01, 1, float("inf"), float("nan"), True])
+def test_invalid_percentage_tolerance_rejected(source, tolerance):
+    from devika.src.ownership import REQUIRED_FIELDS, validate_attributes
+    with pytest.raises(PreparationError, match="percentage_tolerance"):
+        validate_attributes(gpd.read_file(source), REQUIRED_FIELDS, percentage_tolerance=tolerance)
+
+
+def test_cli_rounding_tolerance(source, tmp_path):
+    frame = gpd.read_file(source)
+    frame.loc[0, "PUBLIC_PERCENT"] = 100.00999999999999
+    path = tmp_path / "rounded.gpkg"
+    frame.to_file(path)
+    output = tmp_path / "all.geojson"
+    result = subprocess.run([sys.executable, str(SCRIPT), "--source", str(path),
+        "--all-features", "--percentage-tolerance", "0.01", "--output", str(output)],
+        cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["feature_count"] == 3
+    assert report["percentage_tolerance"] == 0.01
+    assert gpd.read_file(output).PUBLIC_PERCENT.iloc[0] == 100.00999999999999
