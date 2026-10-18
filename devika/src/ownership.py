@@ -77,7 +77,7 @@ def prepare_ownership(source, output, **kwargs):
         raise PreparationError(str(error)) from error
 
 
-def _prepare_ownership(source, output, *, audit, bbox=None, bbox_crs=None, aoi_path=None,
+def _prepare_ownership(source, output, *, audit, all_features=False, bbox=None, bbox_crs=None, aoi_path=None,
                        required_fields=REQUIRED_FIELDS, max_features=50000,
                        max_output_mb=25, max_feature_mb=4):
     source, output = Path(source).resolve(), Path(output).resolve()
@@ -93,23 +93,25 @@ def _prepare_ownership(source, output, *, audit, bbox=None, bbox_crs=None, aoi_p
     for value in (max_output_mb, max_feature_mb):
         if not math.isfinite(value) or value <= 0:
             raise PreparationError("Export size limits must be positive and finite.")
-    subset = make_subset(bbox=bbox, bbox_crs=bbox_crs, aoi_path=aoi_path)
+    if all_features and any(value is not None for value in (bbox, bbox_crs, aoi_path)):
+        raise PreparationError("Full-source mode cannot be combined with an AOI or bbox CRS.")
+    subset = None if all_features else make_subset(bbox=bbox, bbox_crs=bbox_crs, aoi_path=aoi_path)
     info = pyogrio.read_info(source)
     if info["crs"] is None or CRS.from_user_input(info["crs"]).to_epsg() is None:
         raise PreparationError("Ownership source requires an EPSG-resolvable CRS; none will be guessed.")
     source_crs = CRS.from_user_input(info["crs"])
-    bounds = Transformer.from_crs(subset.crs, source_crs, always_xy=True).transform_bounds(
+    bounds = None if all_features else Transformer.from_crs(subset.crs, source_crs, always_xy=True).transform_bounds(
         *subset.total_bounds, densify_pts=21
     )
-    if not all(math.isfinite(value) for value in bounds):
+    if bounds is not None and not all(math.isfinite(value) for value in bounds):
         raise PreparationError("AOI cannot be transformed to source CRS.")
-    progress("Reading ownership cells intersecting AOI bounds...")
+    progress("Reading all ownership cells..." if all_features else "Reading ownership cells intersecting AOI bounds...")
     candidates = pyogrio.read_dataframe(source, bbox=bounds, max_features=max_features + 1, fid_as_index=True)
     if len(candidates) > max_features:
         raise PreparationError(f"Ownership selection exceeds the {max_features}-candidate limit; reduce the AOI.")
     validate_polygons(candidates, "Ownership candidates")
-    source_aoi = subset.to_crs(source_crs).geometry.union_all()
-    selected = candidates.loc[candidates.intersects(source_aoi)].copy()
+    source_aoi = None if all_features else subset.to_crs(source_crs).geometry.union_all()
+    selected = candidates.copy() if all_features else candidates.loc[candidates.intersects(source_aoi)].copy()
     validate_polygons(selected, "Selected ownership cells")
     percentages = validate_attributes(selected, required_fields)
     audit.update(source_crs=source_crs.to_string(), candidate_count=len(candidates),
@@ -142,6 +144,9 @@ def _prepare_ownership(source, output, *, audit, bbox=None, bbox_crs=None, aoi_p
         "warnings": [], "versions": {"geopandas": gpd.__version__, "pyogrio": pyogrio.__version__,
                                        "shapely": shapely.__version__},
     }
+    if all_features:
+        report["selection"]["method"] = "all source cells; complete original cells retained"
+        report["interpretation"] = INTERPRETATION.replace("Cells are selected by intersection", "All source cells are selected")
     if nominal_deviations:
         report["warnings"].append("Some cell areas differ from nominal 1 km² by more than 1%; original footprints retained for review.")
     if any(stats["null_count"] for stats in percentages.values()):

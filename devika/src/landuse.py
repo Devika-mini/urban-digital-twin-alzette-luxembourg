@@ -16,6 +16,7 @@ from pyproj import CRS, Transformer
 import shapely
 from shapely.geometry import box
 from shapely.geometry.polygon import orient
+from shapely.ops import transform
 from shapely.validation import explain_validity, make_valid
 
 
@@ -120,6 +121,8 @@ def _prepare_landuse(
     output: str | Path,
     *,
     audit: dict,
+    all_features: bool = False,
+    source_fids=None,
     layer: str = "LandUse_status_2024",
     category_field: str = "LU1_level__3_name",
     bbox=None,
@@ -150,7 +153,9 @@ def _prepare_landuse(
     for name, value in (("max_output_mb", max_output_mb), ("max_feature_mb", max_feature_mb)):
         if not math.isfinite(value) or value <= 0:
             raise PreparationError(f"{name} must be positive and finite.")
-    subset = make_subset(bbox=bbox, bbox_crs=bbox_crs, aoi_path=aoi_path)
+    if all_features and any(value is not None for value in (bbox, bbox_crs, aoi_path)):
+        raise PreparationError("Full-source mode cannot be combined with an AOI or bbox CRS.")
+    subset = None if all_features else make_subset(bbox=bbox, bbox_crs=bbox_crs, aoi_path=aoi_path)
     audit["selection"] = {"method": "clip polygon parts to AOI; split pieces retain source attributes",
                           "bbox": list(bbox) if bbox is not None else None,
                           "bbox_crs": str(bbox_crs) if bbox_crs is not None else None,
@@ -161,37 +166,42 @@ def _prepare_landuse(
     if category_field not in info["fields"]:
         raise PreparationError(f"Missing classification field: {category_field}")
     source_crs = CRS.from_user_input(info["crs"])
-    bounds = Transformer.from_crs(subset.crs, source_crs, always_xy=True).transform_bounds(
+    bounds = None if all_features else Transformer.from_crs(subset.crs, source_crs, always_xy=True).transform_bounds(
         *subset.total_bounds, densify_pts=21
     )
-    if not all(math.isfinite(v) for v in bounds):
+    if bounds is not None and not all(math.isfinite(v) for v in bounds):
         raise PreparationError("Subset cannot be transformed to source CRS.")
     audit.update(source_layer=layer, source_crs=source_crs.to_string())
     progress("Reading spatial candidates (national multipart features may still be large)...")
-    candidates = pyogrio.read_dataframe(source, layer=layer, bbox=bounds, max_features=max_features + 1,
-                                       fid_as_index=True)
+    read_options = {"fids": source_fids} if source_fids is not None else {"bbox": bounds, "max_features": max_features + 1}
+    if source_fids is not None and not all_features:
+        raise PreparationError("FID batches require full-source mode.")
+    candidates = pyogrio.read_dataframe(source, layer=layer, fid_as_index=True, **read_options)
     if len(candidates) > max_features:
         raise PreparationError(f"Subset exceeds the {max_features}-candidate limit; choose a smaller AOI.")
     audit["candidate_count"] = len(candidates)
     audit["source_candidates_with_z"] = int(candidates.geometry.has_z.sum())
-    source_aoi = subset.to_crs(source_crs).geometry.union_all()
+    source_aoi = None if all_features else subset.to_crs(source_crs).geometry.union_all()
     # Also clip after reprojection: transformed straight edges are not identical
     # in different CRSs. This enforces the user's AOI in the exported CRS.
-    output_aoi = subset.to_crs(4326).geometry.union_all()
+    output_aoi = None if all_features else subset.to_crs(4326).geometry.union_all()
+    national_transformer = Transformer.from_crs(source_crs, 4326, always_xy=True) if all_features else None
     output_polygons, row_positions, lineage = [], [], []
     skipped_parts = 0
     for position, (fid, geometry) in enumerate(candidates.geometry.items()):
         if position % 10 == 0 or position == len(candidates) - 1:
-            progress(f"Clipping source {position + 1}/{len(candidates)} (FID {fid})...")
+            progress(f"Processing source {position + 1}/{len(candidates)} (FID {fid})...")
         if geometry is None or geometry.is_empty or geometry.geom_type not in ("Polygon", "MultiPolygon"):
             raise PreparationError(f"Source FID {fid}: missing/empty/non-polygon geometry.")
         parts = geometry.geoms if geometry.geom_type == "MultiPolygon" else [geometry]
         for part_index, part in enumerate(parts):
+            if all_features and part_index % 1000 == 0:
+                progress(f"  Processing polygon part {part_index + 1}...")
             identity = {"source_fid": int(fid), "source_part": part_index}
             if part.is_empty or not all(math.isfinite(v) for v in part.bounds):
                 raise PreparationError(f"Source FID {fid}, part {part_index}: empty/non-finite geometry.")
             # Envelope filtering requires no topological operations on invalid rings.
-            if not box(*part.bounds).intersects(source_aoi.envelope):
+            if not all_features and not box(*part.bounds).intersects(source_aoi.envelope):
                 skipped_parts += 1
                 continue
             fixed = part
@@ -220,16 +230,17 @@ def _prepare_landuse(
             else:
                 repaired_parts = [fixed]
             for repaired_part in repaired_parts:
-                clipped = repaired_part.intersection(source_aoi)
+                clipped = repaired_part if all_features else repaired_part.intersection(source_aoi)
                 pieces, remnants = polygon_parts(clipped)
                 if remnants:
                     audit["geometry_events"].append({**identity, "stage": "source_crs_clip",
                                                      "excluded_nonpolygon_components": remnants})
                 if not pieces:
                     continue
-                transformed = gpd.GeoSeries(pieces, crs=source_crs).to_crs(4326)
+                transformed = ([transform(national_transformer.transform, piece) for piece in pieces]
+                               if all_features else gpd.GeoSeries(pieces, crs=source_crs).to_crs(4326))
                 for piece in transformed:
-                    final = piece.intersection(output_aoi)
+                    final = piece if all_features else piece.intersection(output_aoi)
                     final_parts, remnants = polygon_parts(final)
                     if remnants:
                         audit["geometry_events"].append({**identity, "stage": "output_crs_clip",
@@ -253,7 +264,8 @@ def _prepare_landuse(
     # EPSG:4326 export explicit while leaving source geometry/attributes untouched.
     result = gpd.GeoDataFrame(result, geometry=[shapely.force_2d(p) for p in output_polygons], crs=4326)
     validate_polygons(result, "Clipped land use")
-    check_containment(result, output_aoi)
+    if not all_features:
+        check_containment(result, output_aoi)
     xmin, ymin, xmax, ymax = result.total_bounds
     if not (-180 <= xmin <= xmax <= 180 and -90 <= ymin <= ymax <= 90):
         raise PreparationError("Output coordinates fall outside longitude/latitude bounds.")
@@ -273,7 +285,7 @@ def _prepare_landuse(
         "blank_category_count": int(nonnull.str.strip().eq("").sum()),
         "attributes": [column for column in result.columns if column != result.geometry.name],
         "output_bounds": [float(v) for v in result.total_bounds],
-        "aoi_bounds_epsg4326": list(output_aoi.bounds),
+        "aoi_bounds_epsg4326": list(output_aoi.bounds) if output_aoi is not None else None,
         "geometry_repairs": sum(record["status"] == "repaired" for record in audit["repair_records"]),
         "repair_method": "shapely.make_valid (linework)" if repair_invalid else None,
         "repair_scope": "polygon parts whose envelopes intersect source-CRS AOI envelope",
@@ -282,8 +294,12 @@ def _prepare_landuse(
         "versions": {"geopandas": gpd.__version__, "pyogrio": pyogrio.__version__,
                      "shapely": shapely.__version__, "geos": shapely.geos_version_string},
     }
+    if all_features:
+        report["selection"]["method"] = "all source polygon parts; no spatial filtering or clipping"
+        report["repair_scope"] = "all polygon parts in selected source records"
+        report["validation_scope"] = "all selected source records; see national manifest for completeness"
     output.parent.mkdir(parents=True, exist_ok=True)
-    progress(f"Validating export: {len(result)} clipped polygon pieces...")
+    progress(f"Validating export: {len(result)} polygon pieces...")
     with tempfile.TemporaryDirectory(dir=output.parent) as staging:
         temporary = Path(staging) / output.name
         # GDAL's RFC7946 writer rounded boundary coordinates in testing even with
@@ -316,7 +332,8 @@ def _prepare_landuse(
         if restored.geometry.has_z.any():
             raise PreparationError("Export dimension mismatch: expected XY, observed Z coordinates.")
         validate_polygons(restored, "Export round trip")
-        check_containment(restored, output_aoi)
+        if not all_features:
+            check_containment(restored, output_aoi)
         expected_categories = [None if value is None or pd.isna(value) else value for value in categories]
         if [feature["properties"].get(category_field) for feature in features] != expected_categories:
             raise PreparationError("Export round trip changed category values.")
@@ -324,7 +341,7 @@ def _prepare_landuse(
             raise PreparationError("Export round trip changed attribute names.")
         report.update(status="validated", file_size_bytes=file_bytes, largest_feature_bytes=feature_bytes,
                       size_limits_mib={"file": max_output_mb, "feature": max_feature_mb},
-                      output_within_aoi=True, containment_tolerance_degrees=CONTAINMENT_TOLERANCE,
+                      output_within_aoi=None if all_features else True, containment_tolerance_degrees=CONTAINMENT_TOLERANCE,
                       valid_geometry_count=int(restored.geometry.is_valid.sum()))
         temp_report = Path(staging) / report_path.name
         temp_report.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")

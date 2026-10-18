@@ -394,3 +394,66 @@ coordinates, retained attributes, invalid inputs, candidate limits, and CLI use
 from another directory. No real source datasets, PostGIS ingestion, GeoServer
 styles, browser behaviour or DEM alignment were tested.
 Cloud workspace changes do not automatically update the user's Mac or GitHub fork.
+
+## Full Luxembourg source coverage: ownership and land use
+
+These commands process **every feature in the supplied source**, without an AOI
+filter. They do not establish national completeness independently of the source,
+clip to an administrative boundary, or ingest anything into EDDIE. Original files
+and earlier AOI exports remain unchanged. Paths below are relative to `devika/`.
+
+From the repository root, activate `devika/.venv`, then run ownership first:
+
+```bash
+python devika/scripts/prepare_ownership.py \
+  --source data/owner-type-grid.geojson \
+  --all-features \
+  --output outputs/luxembourg_ownership_2019.geojson
+```
+
+If the source was moved into `data/raw/ownership/`, change `--source` accordingly.
+The output retains all original complete grid cells and all ownership attributes.
+Percentages describe those whole cells, not individual parcels. Existing geometry,
+percentage, grid-area and read-back checks still apply. Invalid cells stop the run;
+we do not repair or reshape ownership cells automatically.
+
+For the full 2024 land-use layer:
+
+```bash
+python devika/scripts/prepare_national_landuse.py \
+  --source data/landuse-luxembourg-07-15-18-21-24.gpkg \
+  --repair-invalid \
+  --output-directory outputs/luxembourg_landuse_2024
+```
+
+Land use reads original source features **one at a time by FID**, repairs invalid
+polygon parts using the existing `make_valid` workflow, splits polygon pieces,
+retains original attributes, transforms to EPSG:4326 and removes Z. It does not
+clip or simplify geometries. Lower-dimensional repair remnants are recorded in
+per-file reports; a repair leaving no valid polygon stops the run. Original
+`Shape_Area` and `Shape_Length` remain source attributes, not recalculated values.
+
+Each original feature produces a numbered GeoJSON and validation report. This is
+a collection covering the source, **not a single national GeoJSON**. Output limits
+are 512 MiB per file, 64 MiB per polygon feature and 1,000,000 pieces per source
+record; override with `--max-output-mb`, `--max-feature-mb`, `--max-features` only
+after reviewing a failure. A single source record can still be large: this reduces
+peak memory compared with loading the whole country but is not constant-memory
+streaming. Allow substantial time, free RAM and disk space. Progress prints every
+1,000 polygon parts as well as repairs and source-record changes.
+
+`manifest.json` records the source inventory, completed files, aggregate counts,
+repairs and bytes. Only `status: validated` signifies a complete run. Each file
+passes CRS, polygon validity, classification, attribute-name, count and size checks,
+including read-back through GDAL. AOI containment is inapplicable and reported as
+null. On failure the manifest says `failed`; already completed files are retained
+for diagnosis, but the collection is incomplete. Interrupted runs may say `running`.
+Use a new output directory when rerunning; automatic resume is not implemented.
+
+Tests cover distant polygon parts (no accidental test-AOI filtering), repairs,
+source preservation, completeness, failure manifests and full ownership selection.
+**The national production files are not available in the cloud workspace: actual
+national counts, sizes, runtimes and success remain to be verified on the Mac.**
+Keep all datasets, generated GeoJSONs and reports under the ignored data/output
+paths. Do not load all national files into the browser directly; publication and
+rendering strategy remain a later EDDIE integration task.

@@ -40,6 +40,7 @@ def main(argv=None):
     parser.add_argument("--source", help="Source ownership GeoJSON; relative to devika/.")
     parser.add_argument("--output", help="New .geojson output path; relative to devika/.")
     selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--all-features", action="store_true", help="Export every source grid cell, without an AOI.")
     selection.add_argument("--bbox", nargs=4, type=float, metavar=("XMIN", "YMIN", "XMAX", "YMAX"))
     selection.add_argument("--aoi", help="Polygon AOI file with CRS; relative to devika/.")
     parser.add_argument("--bbox-crs", help="Explicit bbox CRS, e.g. EPSG:4326.")
@@ -67,11 +68,15 @@ def main(argv=None):
             bbox, aoi = args.bbox, None
         elif args.aoi is not None:
             bbox, aoi = None, args.aoi
+        if args.all_features:
+            if args.bbox_crs:
+                raise ValueError("--all-features cannot be combined with --bbox-crs.")
+            bbox, aoi = None, None
         report = prepare_ownership(
             source_path,
             resolve_path(args.output or str(Path(output["directory"]) / "alzette_ownership_2019.geojson")),
-            required_fields=source["fields"],
-            bbox=bbox, bbox_crs=args.bbox_crs or subset["bbox_crs"], aoi_path=resolve_path(aoi),
+            required_fields=source["fields"], all_features=args.all_features,
+            bbox=bbox, bbox_crs=None if args.all_features else args.bbox_crs or subset["bbox_crs"], aoi_path=resolve_path(aoi),
             max_output_mb=args.max_output_mb if args.max_output_mb is not None else output.get("max_file_mb", 25),
             max_feature_mb=args.max_feature_mb if args.max_feature_mb is not None else output.get("max_feature_mb", 4),
             max_features=args.max_features if args.max_features is not None else subset.get("max_features", 50000),
