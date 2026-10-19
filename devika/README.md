@@ -567,3 +567,95 @@ The largest output file is `landuse_2024_0080.geojson` (82,336,263 bytes);
 its largest individual polygon is 81,787,865 bytes. All source attributes, including
 original `Shape_Area` and `Shape_Length`, remain source values. No EDDIE ingestion,
 GeoServer styling or frontend integration was performed.
+
+## Merge the validated national land-use collection
+
+Use only `outputs/luxembourg_landuse_2024_v3/`. The merge command requires its
+validated `manifest.json`, all manifest-listed GeoJSONs and validation sidecars,
+and the independent `outputs/luxembourg_landuse_2024_v3.audit.json`. It checks
+completeness, file sizes, schemas, classifications and per-file bounds before
+accepting the collection. Earlier incomplete collections are not merge inputs.
+
+From repository root, using the existing preparation environment:
+
+```bash
+source devika/.venv/bin/activate
+python -m pytest devika/tests -q
+python devika/scripts/merge_national_landuse.py \
+  --input-directory outputs/luxembourg_landuse_2024_v3 \
+  --output outputs/luxembourg_landuse_2024.geojson
+```
+
+The resulting local, Git-ignored files are:
+
+- `devika/outputs/luxembourg_landuse_2024.geojson`
+- `devika/outputs/luxembourg_landuse_2024.merge-report.json`
+
+Relative paths resolve from `devika/`; absolute paths also work. Optional
+`--audit` selects an independent audit file (default: sibling
+`<input-directory>.audit.json`). National CLI defaults require 92 files and
+144,319 features. `--expected-files` and `--expected-features` allow other explicitly
+validated collections; `--max-feature-mb` defaults to 128 MiB per JSON value.
+Outputs must be outside the original collection. An existing output **or report**
+is protected; choose another output filename for a rerun.
+
+The implementation uses existing dependencies and streams in manifest list order,
+retaining each input file's feature order, including duplicates. It copies each
+feature's original UTF-8 JSON text without reserializing values, so coordinate
+precision, property values, nulls, Unicode and classification whitespace survive
+unchanged. It never dissolves, repairs, clips, simplifies, deduplicates or reprojects.
+It retains one feature at a time; the largest feature's text, decoded coordinates
+and GEOS geometry can still require substantial memory. It does not load the
+national collection as one GeoDataFrame or Python feature list.
+
+A separate pass reopens the temporary merged file, parses it with the standard JSON
+decoder and validates every geometry through GEOS. It verifies 2D finite positions,
+closed polygon rings, nonempty valid Polygon/MultiPolygon geometry, the 11 original
+attribute names, counts, classifications and combined geographic bounds. EPSG:4326
+is checked against the input manifest/reports and any explicit collection CRS; the
+output uses standard GeoJSON's implicit WGS84 longitude/latitude coordinates.
+The merge does not use GDAL's GeoJSON reader, so it needs no GDAL object-size override.
+
+Per-feature SHA-256 hashes cover the exact copied feature text, including geometry,
+properties and any feature IDs. Ordered aggregates are recorded per input file and
+for the complete input/output sequences, proving content and ordering match across
+the independent read-back pass. Checksums before and after cover all 92 source
+GeoJSONs, 92 preparation reports, the manifest and independent audit. The report
+also records counts, bounds, classifications, output size and checksum, inventory,
+validation method and geometry types.
+
+Only after all checks pass are the final output and success report published using
+atomic hard links that refuse to replace existing files. Temporary files are
+removed automatically on failure; a distinct `.merge-failure-<timestamp>.json`
+records errors without overwriting earlier reports. Per-file and per-5,000-feature
+progress messages go to stderr; the final concise JSON summary goes to stdout.
+
+The merge tests use synthetic fixtures and cover nulls, Unicode, numeric precision,
+ordering, duplicate retention, malformed/incomplete inputs, count/classification/
+bounds mismatches, non-2D/invalid polygons, changed sources, existing paths, atomic
+publication collisions and read-back failures. These tests are separate from actual
+national output validation. The national file is for storage, transfer or later
+ingestion; direct browser loading and EDDIE/PostGIS/GeoServer/frontend integration
+remain deferred.
+
+### Actual national merge validation — 18 October 2026
+
+The command above ran successfully on the Mac after all **125 synthetic tests**
+passed. The separate real-data read-back validated **144,319 nonempty 2D Polygon
+features** from all 92 manifest-listed files, with all 11 attributes and 44 exact
+classification labels retained. There are no null or blank classifications.
+Input/output ordered content hashes and classification counts match; all 186
+source/evidence checksums are unchanged.
+
+The merged file is **494,886,519 bytes**. Its slightly smaller size reflects the
+consolidated collection wrappers; feature JSON is copied unchanged. Input and
+output bounds both equal:
+
+```text
+[5.73569875724908, 49.447858667065105, 6.531248333256318, 50.18279886334482]
+```
+
+The success report is `outputs/luxembourg_landuse_2024.merge-report.json` with
+`status: validated`. Output SHA-256:
+`b7316ceb00542ca2c728fae4ba74a7b163e44b5a4b04c78a598524226cf8852a`.
+The original `_v3` collection and its validation evidence remain unchanged.
