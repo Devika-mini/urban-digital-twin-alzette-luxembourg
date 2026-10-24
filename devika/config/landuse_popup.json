@@ -1,0 +1,6 @@
+{
+  "featureInfoTemplate": {
+    "name": "{{landuse_label}}",
+    "template": "<h3>{{landuse_label}}</h3><p>Polygon area: {{polygon_area_m2}} m²</p><p>Ownership coverage: {{ownership_coverage_pct}}%</p><p>Intersecting ownership cells: {{ownership_cell_count}}</p><h4>Estimated ownership (2019)</h4><p>Public total: {{estimated_PUBLIC_PERCENT}}%</p><p>Public estimate coverage: {{coverage_PUBLIC_PERCENT}}%</p><p>Commune: {{estimated_Commune_percent}}% (coverage: {{coverage_Commune_percent}}%)</p><p>State: {{estimated_Etat_percent}}% (coverage: {{coverage_Etat_percent}}%)</p><p>Public domain: {{estimated_Domaine_public_percent}}% (coverage: {{coverage_Domaine_public_percent}}%)</p><p>Other: {{estimated_Autre_percent}}% (coverage: {{coverage_Autre_percent}}%)</p><p>Blank values mean unavailable, not zero. Listed categories are not necessarily exhaustive. Public total overlaps its component categories; do not add them together.</p><p>Area-weighted grid estimate, not verified parcel ownership. Assumes uniform ownership composition within each cell. Land use: 2024; ownership: 2019.</p>"
+  }
+}

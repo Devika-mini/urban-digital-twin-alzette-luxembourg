@@ -659,3 +659,61 @@ The success report is `outputs/luxembourg_landuse_2024.merge-report.json` with
 `status: validated`. Output SHA-256:
 `b7316ceb00542ca2c728fae4ba74a7b163e44b5a4b04c78a598524226cf8852a`.
 The original `_v3` collection and its validation evidence remain unchanged.
+
+## Polygon ownership estimates and popup preparation
+
+Working river section: **Alzette km 35–50**. Its surrounding AOI boundary/corridor
+width still needs to be specified; kilometre markers alone do not define a polygon.
+Do not substitute the earlier Hesperange rectangle. These commands do not deploy
+anything or change the DEM.
+
+List the full national classification inventory from the validated merged file:
+
+```bash
+python devika/scripts/list_landuse_categories.py \
+  --source outputs/luxembourg_landuse_2024.geojson
+```
+
+This streams the source and prints every exact label, a whitespace-trimmed display
+label and its polygon count. It does not merge categories or change source values.
+The national audit documented 44 exact labels; the cloud checkout does not contain
+the actual data, so the current label list must be generated on the Mac.
+
+After preparing a regional land-use layer clipped to the agreed km 35–50 AOI:
+
+```bash
+python devika/scripts/analyse_landuse_ownership.py \
+  --landuse outputs/alzette_35_50_landuse.geojson \
+  --ownership outputs/luxembourg_ownership_2019.geojson \
+  --output outputs/alzette_35_50_landuse_ownership.geojson
+```
+
+The regional input filename above is a **future prerequisite**, not an existing
+output. Analysis retains each input polygon; it does not dissolve all polygons of
+one category. Input files are loaded in memory, so use a regional land-use file.
+Intersection areas are computed in EPSG:2169. Each percentage is weighted by its
+intersection area and divided by area with a known value for that field. Uncovered
+or null data is not zero: overall coverage and per-field coverage are returned.
+Overlapping ownership footprints within an analysed polygon fail rather than
+silently double-count. The explicit audited 0.01-point rounding exception remains
+allowed without clamping values. Categories are not summed because PUBLIC_PERCENT
+includes component categories. The uniform-within-cell assumption and 2019/2024
+time mismatch must remain visible to the user.
+
+The derived layer preserves source fields and adds estimates, coverage, calculated
+polygon area and a trimmed `landuse_label`. Existing Shape_Area/Shape_Length remain
+source values and should not be shown as the displayed polygon's measurements.
+
+`config/landuse_popup.json` is a **draft TerriaJS catalog fragment** with an explicit
+field allowlist in the HTML template. Apply it to the actual derived layer item
+only after confirming feature-property names in the running service. It is not
+installed automatically: the tracked TerriaJS catalog currently contains no items,
+and the Mac's running catalog was not available for inspection. Rendering, decimal
+formatting, null presentation, geometry-field suppression and the availability of
+additional raw-property views must be tested against that deployment. It hides
+technical fields from the intended template without deleting source attributes.
+A full category palette and GeoServer styles still need to be configured.
+
+Synthetic tests verify known weighted results, missing/partial coverage and
+rejection of overlapping cells. Actual km 35–50 analysis and frontend behaviour
+remain unverified until the AOI and local inputs/configuration are available.
