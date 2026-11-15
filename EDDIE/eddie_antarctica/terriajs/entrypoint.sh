@@ -44,9 +44,17 @@ fi
 if ! grep -q "water-level-control.js" wwwroot/index.html
 then
   sed -i \
-    's#</body>#<script src="/water-level-control.js?v=21"></script></body>#' \
+    's#</body>#<script src="/water-level-control.js?v=22"></script></body>#' \
     wwwroot/index.html
 fi
+# Inject the mode selection (entry screen, Casual / In-depth switch).
+for SCRIPT in twin-mode.js
+do
+  if ! grep -q "$SCRIPT" wwwroot/index.html
+  then
+    sed -i "s#</body>#<script src=\"/$SCRIPT?v=1\"></script></body>#" wwwroot/index.html
+  fi
+done
 # Add only the optional flood-cost popup adapter; existing page scripts stay intact.
 if [[ -f "wwwroot/flood-cost-popup.js" ]]; then
   SUBBED=$(envsubst "$ENV_VARS_TO_FILL" < "wwwroot/flood-cost-popup.js")
