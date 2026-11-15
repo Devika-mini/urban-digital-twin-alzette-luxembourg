@@ -1,3 +1,47 @@
+# Alzette digital twin
+
+## Quick start
+
+**Prerequisites:** [Docker](https://docs.docker.com/get-docker/) with Docker Compose 2.24 or newer
+(Docker Desktop includes it), and Git with [Git LFS](https://git-lfs.com) to clone. Nothing else: every
+build and data-processing step runs in containers. On Windows use Git Bash or PowerShell, and clone to a
+short path (e.g. `C:\dev\`) or run `git config --global core.longpaths true` first: some file paths are long.
+
+1. **Clone** the repository (`git lfs install` once, then `git clone …`).
+2. **Data:** copy the data folder in, so that `data/raw/` sits next to this README.
+   [`data/README.md`](data/README.md) lists the files it must contain.
+3. **Settings:** `cp .env.example .env`, then fill in the empty values (passwords of your choice; the
+   comments in the file explain each one).
+4. **Start:**
+
+   ```bash
+   ./start.sh          # Linux, macOS, Git Bash
+   .\start.ps1         # Windows PowerShell
+   ```
+
+   It checks Docker, `.env` and the data folder, generates what the twin derives from the data (terrain,
+   3D tiles, REM), builds and starts every service, waits until they are healthy and prints the URLs.
+   The map is at <http://localhost:3001> (the port is `WWW_PORT` in `.env`).
+
+The first run builds the Docker images (the backend's conda environment takes longest, the first time on a
+computer) and generates the terrain, 3D tiles and REM (about 2½ minutes). Later runs skip everything that
+is up to date: about a minute from a stopped twin, a few seconds when it is already running. After the
+first start, the gauge collector fetches the water-level history (since 2017) in the background, so day
+replays become available within a few minutes.
+
+| Command | |
+|---|---|
+| `./start.sh --force` | regenerate everything derived from `data/raw/`, then start |
+| `./start.sh --no-generate` | skip the generation, start straight away |
+| `./start.sh stop` | stop the twin (the database is kept) |
+| `./start.sh logs [service]` | follow the logs, e.g. `./start.sh logs backend` |
+| `./start.sh status` | the services and their health |
+| `./start.sh reset [--volumes]` | delete the generated files (and, with `--volumes`, the database and GeoServer volumes); never touches `data/` or `.env` |
+
+What each system does and where it is in the map: [`docs/SYSTEMS_INVENTORY.md`](docs/SYSTEMS_INVENTORY.md).
+
+---
+
 # The Story of the Alzette Twin
 
 In our university project, we built a digital twin for the Alzette river in Luxembourg. But how did we get there and what decisions did we make along the way? We will illuminate this in the following series of chapters.
