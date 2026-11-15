@@ -155,6 +155,24 @@ def load_precipitation_period():
 
     with engine.connect() as conn:
 
+        # No observation was ever ingested (eddie_alzette_ingest): nothing to interpolate.
+        observations_exist = conn.execute(
+            text("SELECT to_regclass('public.weather_observations') IS NOT NULL")
+        ).scalar_one()
+
+        if not observations_exist:
+            return jsonify(
+                {
+                    "status": "no_data",
+                    "start": start_iso,
+                    "end": end_iso,
+                    "message": (
+                        "No ASTA precipitation observations "
+                        "have been ingested yet."
+                    ),
+                }
+            ), 404
+
         # ----------------------------------------------------
         # 1. Count usable raw precipitation timestamps
         # ----------------------------------------------------

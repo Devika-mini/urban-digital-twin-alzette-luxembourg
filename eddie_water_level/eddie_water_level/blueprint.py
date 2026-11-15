@@ -8,6 +8,7 @@ from http.client import BAD_REQUEST, NOT_FOUND
 import numpy as np
 import pandas as pd
 from flask import Blueprint, current_app, g, jsonify, request, url_for
+from flask.typing import ResponseReturnValue as ResponseValue
 
 
 blueprint = Blueprint(
@@ -34,6 +35,11 @@ SLOPE_SHADING_ITEM_ID = "alzette-slope-shading"
 
 # REM view (eddie_water_level.rem), added to any init file by prefixing its path with rem/.
 REM_VIEW_ITEM_ID = "alzette-rem-view"
+
+# Map layers added to any init file by prefixing its path with layers/<kinds>/ (see
+# terria_water_init_with_layers): rain, the official flood zones (zones-hq10, ...) and the water fees.
+FLOOD_ZONE_STYLES = {"hq10": "#f0a030", "hq100": "#e0523c", "hqextreme": "#8e1b1b"}
+MAP_LAYER_KINDS = {"rain", "fees"} | {f"zones-{name}" for name in FLOOD_ZONE_STYLES}
 
 # Gauges that can be left out of the water level ("without" argument), in key order.
 GAUGE_NAMES = ("pfaffenthal", "hesperange", "livange")
@@ -185,6 +191,51 @@ def water_levels(args) -> dict:
         "multiplier": float(args.get("multiplier", 1.0)),
         "hold_s": MANUAL_HOLD_S,
     }
+
+
+def _geoserver_url() -> str:
+    """Return GeoServer's URL as the browser reaches it (GEOSERVER_HOST:GEOSERVER_PORT), as in the Terria catalog."""
+    # pylint: disable=import-outside-toplevel
+    from eddie.config import EnvVariable
+
+    return f"{EnvVariable.GEOSERVER_HOST}:{EnvVariable.GEOSERVER_PORT}/geoserver"
+
+
+# GeoServer layers behind the rain and water-fee map layers (workspace, layer); each is published
+# only once its data exists (live rainfall, an interpolated history, a water-fee model run).
+GEOSERVER_LAYERS = {
+    "rain_live": ("input_layers", "precip_live_test"),
+    "rain_history": ("input_layers", "precipitation_interpolated_history"),
+    "fees": ("input_layers", "building_population_4326"),
+}
+_published_cache: dict = {}
+PUBLISHED_CACHE_S = 60.0
+
+
+def _published(key: str, fresh: bool = False) -> bool:
+    """Tell whether GeoServer serves the layer behind a map layer (checked at most once a minute, unless fresh)."""
+    # pylint: disable=import-outside-toplevel
+    import time
+
+    import requests
+    from eddie.config import EnvVariable
+    from eddie.geoserver.geoserver_common import get_geoserver_url
+
+    cached = _published_cache.get(key)
+    if cached and not fresh and time.monotonic() - cached[1] < PUBLISHED_CACHE_S:
+        return cached[0]
+    workspace, layer = GEOSERVER_LAYERS[key]
+    try:
+        response = requests.get(
+            f"{get_geoserver_url()}/layers/{workspace}:{layer}.json",
+            auth=(EnvVariable.GEOSERVER_ADMIN_NAME, EnvVariable.GEOSERVER_ADMIN_PASSWORD),
+            timeout=5,
+        )
+        published = response.status_code == 200
+    except requests.RequestException:
+        published = False
+    _published_cache[key] = (published, time.monotonic())
+    return published
 
 
 def _bad_request(message: str):
@@ -410,23 +461,63 @@ def _water_surface_init(
     reason as the buildings; their ids stay the same, so Terria keeps them loaded across water changes.
     """
     catalog, workbench, timeline = [], [], []
+    map_layers = g.get("map_layers", [])
 
-    # Present rainfall — provisional live observation test
-    # Add only for live/manual water-level views, not historical replay.
-    if czml_query is not None and "pfaffenthal_cm" in czml_query:
+    # Rainfall, with the layers/rain/ prefix: the latest interpolated rainfall for live and manual
+    # levels (provisional live observation test), the day's interpolated history for a day replay
+    # (loaded by POST /load-digital-twin-date; on the timeline so it follows Terria's clock).
+    if "rain" in map_layers and czml_query is not None and "pfaffenthal_cm" in czml_query and _published("rain_live"):
         rainfall_id = "alzette-present-rainfall-test"
 
         catalog.append({
             "id": rainfall_id,
             "type": "wms",
             "name": "Present rainfall (test)",
-            "url": "http://localhost:8088/geoserver/wms",
+            "url": f"{_geoserver_url()}/wms",
             "layers": "input_layers:precip_live_test",
             "show": True,
             "opacity": 0.65,
         })
 
         workbench.append(rainfall_id)
+    if "rain" in map_layers and czml_query is not None and "date" in czml_query \
+            and _published("rain_history", fresh="rain_version" in g):
+        # Own id per day (and per refresh): Terria keeps the time steps of an item it already loaded.
+        rainfall_id = f"alzette-rainfall-day-{czml_query['date']}-{g.get('rain_version', '0')}"
+        catalog.append({
+            "id": rainfall_id,
+            "type": "wms",
+            "name": f"Rainfall {czml_query['date']} (interpolated)",
+            "url": f"{_geoserver_url()}/input_layers/wms?v={g.get('rain_version', '0')}",
+            "layers": "precipitation_interpolated_history",
+            "fromContinuous": "nearest",
+            "opacity": 0.65,
+        })
+        workbench.append(rainfall_id)
+        timeline.append(rainfall_id)
+    for kind in map_layers:
+        if kind.startswith("zones-") and kind[len("zones-"):] in FLOOD_ZONE_STYLES:
+            scenario_name = kind[len("zones-"):]
+            colour = FLOOD_ZONE_STYLES[scenario_name]
+            catalog.append({
+                "id": f"alzette-flood-zone-{scenario_name}",
+                "type": "geojson",
+                "name": f"Flood zone {scenario_name.upper()} (official hazard map)",
+                "url": url_for("eddie_water_level.flood_zone_geojson", scenario=scenario_name, _external=True),
+                "clampToGround": True,
+                "style": {"fill": colour, "fill-opacity": 0.35, "stroke": colour, "stroke-width": 1.5},
+            })
+            workbench.append(f"alzette-flood-zone-{scenario_name}")
+    if "fees" in map_layers and _published("fees"):
+        catalog.append({
+            "id": "alzette-water-fees",
+            "type": "wms",
+            "name": "Water fee per building (non-residential model)",
+            "url": f"{_geoserver_url()}/input_layers/wms",
+            "layers": "building_population_4326",
+            "opacity": 0.8,
+        })
+        workbench.append("alzette-water-fees")
 
     query_id = ""
     if czml_query is not None:
@@ -687,6 +778,70 @@ def terria_water_init_with_rem(rest):
     g.rem_view = True
     endpoint, args = current_app.url_map.bind_to_environ(request.environ).match(f"/terria-water-init/{rest}", method="GET")
     return current_app.view_functions[endpoint](**args)
+
+
+@blueprint.route(
+    "/terria-water-init/layers/<kinds>/<path:rest>",
+    methods=["GET"],
+)
+def terria_water_init_with_layers(kinds: str, rest: str) -> ResponseValue:
+    """
+    Any Terria init file above (also with the other prefixes), with map layers added: rain,
+    zones-hq10 / zones-hq100 / zones-hqextreme (official flood zones) and fees (water-fee model).
+
+    Example: /terria-water-init/layers/rain,zones-hq100/level/120/140/90.json
+    "rain.<n>" is rain with a refresh number: a day replay's rainfall is loaded again under a new id
+    once its interpolation has been computed.
+    """
+    g.map_layers = []
+    for kind in kinds.split(","):
+        name, _, version = kind.partition(".")
+        if name in MAP_LAYER_KINDS:
+            g.map_layers.append(name)
+            if name == "rain" and version.isdigit():
+                g.rain_version = version
+    adapter = current_app.url_map.bind_to_environ(request.environ)
+    endpoint, args = adapter.match(f"/terria-water-init/{rest}", method="GET")
+    return current_app.view_functions[endpoint](**args)
+
+
+@blueprint.route(
+    "/map-layers/status.json",
+    methods=["GET"],
+)
+def map_layers_status() -> ResponseValue:
+    """
+    Tell which data-dependent map layers GeoServer serves now: rain_live (latest rainfall), rain_history
+    (interpolated rainfall of past days) and fees (the water-fee model's result). A map layer whose
+    data is missing is left out of the init files, so the map can say why instead of failing to load.
+    """
+    return jsonify({"status": "success", **{key: _published(key) for key in GEOSERVER_LAYERS}})
+
+
+@blueprint.route(
+    "/flood-zones/<scenario>.geojson",
+    methods=["GET"],
+)
+def flood_zone_geojson(scenario: str) -> ResponseValue:
+    """
+    Serve the official flood zone of a scenario (hq10, hq100, hqextreme) around the reach, as GeoJSON
+    in WGS84, simplified to 1 m: the map's flood zone layers.
+    """
+    # pylint: disable=import-outside-toplevel
+    import geopandas as gpd
+
+    from eddie_water_level import water_surface
+
+    try:
+        extent = water_surface.flood_extent(scenario)
+    except ValueError as exc:
+        return _bad_request(str(exc))
+    except FileNotFoundError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), NOT_FOUND
+    zone = gpd.GeoSeries([extent.simplify(1.0)], crs=2169).to_crs(4326)
+    response = current_app.response_class(zone.to_json(), mimetype="application/geo+json")
+    response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
 
 
 @blueprint.route(
