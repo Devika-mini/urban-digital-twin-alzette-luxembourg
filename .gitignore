@@ -51,6 +51,10 @@ Thumbs.db
 # Nothing in these folders
 data/
 results/
+# ...except the data folder's README (its layout), at the repository root only
+!/data/
+/data/*
+!/data/README.md
 docs/
 # EDDIE/
 temp/
@@ -72,6 +76,9 @@ EDDIE/eddie_antarctica/data/rem/
 # containers read them from disk through bind mounts.
 EDDIE/eddie_antarctica/src/static/geo/*.gpkg
 EDDIE/eddie_antarctica/src/static/geo/HWGK2021_HQ100/
+
+# Model inputs start.sh copies from data/raw/ (and its list of them)
+EDDIE/eddie_antarctica/src/static/geo/.staged-by-start
 
 # Raw inputs of eddie_base_data, placed by hand on each host
 EDDIE/eddie_antarctica/src/static/geo/BU.Building.*
