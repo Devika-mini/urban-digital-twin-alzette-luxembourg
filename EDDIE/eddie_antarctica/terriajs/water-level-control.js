@@ -13,8 +13,9 @@
   "use strict";
 
   var BACKEND_URL = "$BACKEND_URL";
-  // How often the latest gauge readings are checked again.
-  var LIVE_POLL_MS = 5 * 60 * 1000;
+  // How often the latest gauge readings are checked again (minutes): set in the Live replay panel.
+  var POLL_MINUTES = [1, 5, 15, 30];
+  var liveTimer = null;
 
   // Last keyframe shown: gauge stages in cm, or a scenario name ("hq10") for every gauge.
   var previous = null;
@@ -42,15 +43,23 @@
   var GAUGES = [["pf", "Pfaffenthal", "pfaffenthal"], ["he", "Hesperange", "hesperange"], ["li", "Livange", "livange"]];
   var gaugeEnabled = { pf: true, he: true, li: true };
   var SCENARIO_NAMES = ["hq10", "hq100", "hqextreme"];
+  // Map layers added by the backend with the layers/<kinds>/ prefix (listed in every init file while
+  // shown): rain (on by default, as before), the official flood zones, and the water-fee model's result.
+  var mapLayers = { rain: true, "zones-hq10": false, "zones-hq100": false, "zones-hqextreme": false, fees: false };
+  // Refresh number of the day replay's rainfall, raised once its interpolation has been computed.
+  var rainVersion = 0;
+  // The 3D water surface (and its arrows) shown; hidden without reloading anything.
+  var showWater = true;
 
-  function loadTerrainSettings() {
-    var settings = Object.assign({}, TERRAIN_DEFAULTS);
+  // Settings objects kept in localStorage: defaults, with the stored values of the same type.
+  function loadSettings(key, defaults) {
+    var settings = Object.assign({}, defaults);
     try {
-      var stored = JSON.parse(localStorage.getItem(TERRAIN_KEY));
+      var stored = JSON.parse(localStorage.getItem(key));
       if (stored && typeof stored === "object") {
-        Object.keys(TERRAIN_DEFAULTS).forEach(function (key) {
-          if (typeof stored[key] === typeof TERRAIN_DEFAULTS[key]) {
-            settings[key] = stored[key];
+        Object.keys(defaults).forEach(function (name) {
+          if (typeof stored[name] === typeof defaults[name]) {
+            settings[name] = stored[name];
           }
         });
       }
@@ -58,13 +67,23 @@
     return settings;
   }
 
-  function saveTerrainSettings() {
+  function saveSettings(key, settings) {
     try {
-      localStorage.setItem(TERRAIN_KEY, JSON.stringify(terrainSettings));
+      localStorage.setItem(key, JSON.stringify(settings));
     } catch (e) { /* storage unavailable */ }
   }
 
-  var terrainSettings = loadTerrainSettings();
+  function saveTerrainSettings() {
+    saveSettings(TERRAIN_KEY, terrainSettings);
+  }
+
+  var terrainSettings = loadSettings(TERRAIN_KEY, TERRAIN_DEFAULTS);
+
+  // Look of the animated water (River panel): ripple size (m), ripple period (s), wave strength,
+  // frames per second of the animation; and the playback speed of a day replay and the live polling.
+  var WATER_KEY = "wl-water";
+  var WATER_DEFAULTS = { rippleSize: 7, period: 3, amplitude: 0.8, fps: 30, replaySpeed: 600, pollMin: 5 };
+  var waterSettings = loadSettings(WATER_KEY, WATER_DEFAULTS);
 
   // Show sun: a colour filter over the 3D view from the sun at the time shown (Luxembourg).
   // All its settings are here: the tint of each phase (colour, and strength = opacity 0..1),
@@ -82,6 +101,22 @@
     }
   };
   var showSun = false;
+  // The Sun panel's settings (dawn / dusk length, strength of each tint), kept in localStorage.
+  var SUN_KEY = "wl-sun";
+  var sunSettings = loadSettings(SUN_KEY, {
+    twilightMin: SUN.twilightMin,
+    twilight: SUN.tints.twilight.strength,
+    day: SUN.tints.day.strength,
+    night: SUN.tints.night.strength
+  });
+
+  function applySunSettings() {
+    SUN.twilightMin = sunSettings.twilightMin;
+    ["twilight", "day", "night"].forEach(function (phase) {
+      SUN.tints[phase].strength = sunSettings[phase];
+    });
+  }
+  applySunSettings();
 
   // Sunrise and sunset (ms, UTC) of the solar day nearest a time: the suncalc formulas
   // (Vladimir Agafonkin, BSD-2-Clause) for the sun's upper limb at the horizon (-0.833 degrees).
@@ -186,7 +221,11 @@
   // Terria loads a URL from its hash only when it ends in .json.
   function namesPrefix() {
     var kinds = Object.keys(showNames).filter(function (kind) { return showNames[kind]; });
-    return (showSlope ? "slope/" : "") + (showRem ? "rem/" : "") + (kinds.length ? "names/" + kinds.join(",") + "/" : "");
+    var layerKinds = Object.keys(mapLayers).filter(function (kind) { return mapLayers[kind]; }).map(function (kind) {
+      return kind === "rain" && rainVersion ? "rain." + rainVersion : kind;
+    });
+    return (layerKinds.length ? "layers/" + layerKinds.join(",") + "/" : "") +
+      (showSlope ? "slope/" : "") + (showRem ? "rem/" : "") + (kinds.length ? "names/" + kinds.join(",") + "/" : "");
   }
 
   // Stage of one gauge in an init path: the scenario name, or x for a gauge disabled or without a value.
@@ -298,18 +337,54 @@
     } else {
       ui.report.style.display = "none";
     }
+    showDamage(scenario);
+  }
+
+  // Estimated building damage of a scenario (eddie_flood_costs: HQ10 and HQ100 only).
+  function showDamage(name) {
+    ui.damage.textContent = "";
+    if (name !== "hq10" && name !== "hq100") {
+      return;
+    }
+    fetch(BACKEND_URL + "/flood-costs/summary/" + name + ".json")
+      .then(function (response) { return response.json(); })
+      .then(function (data) {
+        if (scenario !== name) {
+          return;
+        }
+        if (data.status !== "success") {
+          ui.damage.textContent = "Damage estimate unavailable.";
+          return;
+        }
+        var euro = new Intl.NumberFormat("en-IE", { maximumFractionDigits: 0 });
+        ui.damage.textContent = "Estimated building damage (provisional, 2010 €): " +
+          (data.total_eur2010 === null ? "unknown" : "€" + euro.format(data.total_eur2010)) + ", " +
+          data.positive_damage_buildings + " buildings damaged; " + data.unknown_damage_buildings +
+          " buildings without an estimate. Click a building for its own estimate.";
+      })
+      .catch(function () { ui.damage.textContent = "Damage estimate unavailable."; });
+  }
+
+  // Load the view shown again with the layers chosen now: the current level without animating it
+  // again, or the day replayed from the time shown.
+  function reloadView() {
+    if (replayDate) {
+      keepReplayTime();
+      loadInit(currentView);
+    } else if (previous) {
+      loadInit("level/" + previous.pf + "/" + previous.he + "/" + previous.li);
+    } else if (currentView) {
+      loadInit(currentView);
+    } else {
+      window.location.hash = BACKEND_URL + "/terria-water-init/" + namesPrefix() +
+        (showBuildings ? "buildings" : "names") + ".json";
+    }
+    notifyChange();
   }
 
   function toggleBuildings(checked) {
     showBuildings = checked;
-    if (previous) {
-      // Reload the current level without animating it again.
-      loadInit("level/" + previous.pf + "/" + previous.he + "/" + previous.li);
-    } else if (currentView) {
-      loadInit(currentView);
-    } else if (checked) {
-      window.location.hash = BACKEND_URL + "/terria-water-init/" + namesPrefix() + "buildings.json";
-    }
+    reloadView();
   }
 
   function toggleNames(kind, checked) {
@@ -320,15 +395,17 @@
     } else {
       showNames[kind] = checked;
     }
-    if (previous) {
-      // Reload the current level without animating it again.
-      loadInit("level/" + previous.pf + "/" + previous.he + "/" + previous.li);
-    } else if (currentView) {
-      loadInit(currentView);
-    } else {
-      window.location.hash = BACKEND_URL + "/terria-water-init/" + namesPrefix() +
-        (showBuildings ? "buildings" : "names") + ".json";
+    reloadView();
+  }
+
+  function toggleMapLayer(kind, checked) {
+    mapLayers[kind] = checked;
+    if (kind === "rain" && checked && replayDate) {
+      prepareRain(replayDate);
+    } else if (kind === "rain") {
+      refreshLayerStatus();
     }
+    reloadView();
   }
 
   // ---------------------------------------------------------------------------
@@ -784,7 +861,10 @@
 
     var material = new Cesium.Material({
       fabric: {
-        uniforms: { normalMap: WATER_NORMALS, rippleSize: 7.0, period: 3.0, amplitude: 0.8, time: 0.0 },
+        uniforms: {
+          normalMap: WATER_NORMALS, rippleSize: waterSettings.rippleSize, period: waterSettings.period,
+          amplitude: waterSettings.amplitude, time: 0.0
+        },
         source: WATER_MATERIAL
       },
       translucent: true
@@ -893,7 +973,12 @@
     if (pendingReplayTime && Date.now() > pendingReplayTime.until) {
       pendingReplayTime = null;
     }
-    water.itemId = item ? item.uniqueId : null;
+    var itemId = item ? item.uniqueId : null;
+    if (itemId && itemId !== water.itemId && replayDate && t.timelineClock) {
+      // A day replay plays at the speed chosen in the Data replay panel (Terria takes the CZML's otherwise).
+      t.timelineClock.multiplier = waterSettings.replaySpeed;
+    }
+    water.itemId = itemId;
     if (url !== water.url) {
       water.url = url;
       water.plan = null;
@@ -936,7 +1021,7 @@
       // A new level becomes ready once drawn: until then the previous one stays shown with it.
       level = next && next.surface.ready ? next : water.shown || next;
     }
-    var visible = !!item && item.show !== false;
+    var visible = !!item && item.show !== false && showWater;
     // Camera height above the water (the river lies at about WATER_HEIGHT_M).
     var height = scene.camera.positionCartographic.height - WATER_HEIGHT_M;
     Object.keys(water.built).forEach(function (builtKey) {
@@ -1032,14 +1117,17 @@
   }
 
   // Terria renders only when something changes; while the water is shown, render it at about
-  // WATER_FPS frames per second so its ripples move.
-  var WATER_FPS = 30;
+  // waterSettings.fps frames per second so its ripples move, with the look chosen in the River panel.
   var lastWaterFrame = 0;
 
   function animateWater(now) {
-    if (water.animate && water.shown && now - lastWaterFrame >= 1000 / WATER_FPS) {
+    if (water.animate && water.shown && now - lastWaterFrame >= 1000 / waterSettings.fps) {
       lastWaterFrame = now;
-      water.shown.material.uniforms.time = (now / 1000) % 3600;
+      var uniforms = water.shown.material.uniforms;
+      uniforms.time = (now / 1000) % 3600;
+      uniforms.rippleSize = waterSettings.rippleSize;
+      uniforms.period = waterSettings.period;
+      uniforms.amplitude = waterSettings.amplitude;
       water.scene.requestRender();
     }
     window.requestAnimationFrame(animateWater);
@@ -1285,7 +1373,7 @@
         ui.pf.value = data.pfaffenthal_cm;
         ui.he.value = data.hesperange_cm;
         ui.li.value = data.livange_cm === null ? "" : data.livange_cm;
-        if (!currentView &&
+        if (!currentView && !entered &&
             !window.location.hash.includes("/terria-water-init/")) {
           return;
         }
@@ -1307,7 +1395,349 @@
   function setMode(mode) {
     ui.mode.textContent = mode;
     ui.mode.style.background = MODE_COLOURS[mode] || "#555";
+    notifyChange();
   }
+
+  function scheduleLive() {
+    if (liveTimer) {
+      clearInterval(liveTimer);
+    }
+    liveTimer = setInterval(refreshLive, waterSettings.pollMin * 60 * 1000);
+  }
+
+  // Back to the latest stored gauge readings.
+  function goLive() {
+    live = true;
+    liveLevel = null;
+    refreshLive();
+    refreshLayerStatus();
+  }
+
+  // Replay one day of stored gauge readings. Resolves to { ok, message } once the replay is loaded
+  // (or refused: a day without stored readings would send Terria to a water surface that cannot load).
+  function replayDay(selected) {
+    return fetch(BACKEND_URL + "/terria-water-init/date/" + selected + ".json")
+      .then(function (response) {
+        if (!response.ok) {
+          return response.json().then(function (data) {
+            var message = data.message || "No gauge readings stored for " + selected + ".";
+            ui.replayInfo.textContent = message;
+            return { ok: false, message: message };
+          });
+        }
+        ui.replayInfo.textContent = "Replaying " + selected + ".";
+        ui.replayDay.value = selected;
+        live = false;
+        previous = null;
+        setScenarioBoxes(null);
+        scenario = null;
+        updateReportLink();
+        replayDate = selected;
+        rainVersion = 0;
+        setMode("REPLAY");
+        loadInit("date/" + selected + withoutSuffix());
+        if (mapLayers.rain) {
+          prepareRain(selected);
+        }
+        return fetch(BACKEND_URL + "/water-level/day/" + selected + ".json")
+          .then(function (stagesResponse) { return stagesResponse.json(); })
+          .then(function (data) {
+            if (data.status === "success") {
+              data.ms = data.times.map(function (time) { return Date.parse(time); });
+              replayStages = data;
+            }
+            return { ok: true, message: "Replaying " + selected + "." };
+          });
+      })
+      .catch(function () {
+        ui.replayInfo.textContent = "Could not reach the backend.";
+        return { ok: false, message: "Could not reach the backend." };
+      });
+  }
+
+  // The rainfall of a replayed day is interpolated on request (POST /load-precipitation-period);
+  // once computed, the replay is loaded again with the new rainfall, from the time shown.
+  var rainInfo = "";
+
+  function setRainInfo(text) {
+    rainInfo = text;
+    if (ui.rainInfo) {
+      ui.rainInfo.textContent = text;
+    }
+    notifyChange();
+  }
+
+  // Fetch ASTA rain observations for a period (eddie_alzette_ingest); resolves to the finished task.
+  function fetchRainObservations(startIso, endIso) {
+    return fetch(BACKEND_URL + "/alzette-ingest/precipitation", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "backfill", start: startIso, end: endIso })
+    })
+      .then(function (response) { return response.json(); })
+      .then(function (data) {
+        return data.status === "processing" ? waitForTask(data.task_id) : { status: "error", message: data.message };
+      });
+  }
+
+  function prepareRain(day, fetched) {
+    fetch(BACKEND_URL + "/load-precipitation-period", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ date: day })
+    })
+      .then(function (response) { return response.json(); })
+      .then(function (data) {
+        if (data.status === "cached") {
+          setRainInfo("Rainfall of " + day + " shown (" + data.timestamps + " time steps).");
+        } else if (data.status === "no_data" && !fetched) {
+          // Not fetched yet: get the day's observations from ASTA, then interpolate them.
+          setRainInfo("Fetching the rain observations of " + day + "...");
+          return fetchRainObservations(day + "T00:00:00Z", day + "T23:59:59Z").then(function (task) {
+            if (replayDate !== day) {
+              return;
+            }
+            if (task.status !== "finished") {
+              setRainInfo("The rain observations of " + day + " could not be fetched.");
+              return;
+            }
+            prepareRain(day, true);
+          });
+        } else if (data.status === "no_data") {
+          setRainInfo("No rain observations exist for " + day + ".");
+        } else if (data.status === "processing") {
+          setRainInfo("Computing the rainfall of " + day + "...");
+          return waitForTask(data.task_id).then(function (task) {
+            if (replayDate !== day) {
+              return;
+            }
+            if (task.status !== "finished") {
+              setRainInfo("The rainfall of " + day + " could not be computed.");
+              return;
+            }
+            setRainInfo("Rainfall of " + day + " shown.");
+            rainVersion += 1;
+            if (mapLayers.rain) {
+              reloadView();
+            }
+          });
+        } else {
+          setRainInfo(data.message || "The rainfall could not be loaded.");
+        }
+      })
+      .catch(function () {
+        setRainInfo("Could not reach the backend for the rainfall.");
+      });
+  }
+
+  // Which data-dependent layers GeoServer serves now (GET /map-layers/status.json): the backend
+  // leaves the others out of the init files, and the panels say why.
+  var layerStatus = null;
+
+  function refreshLayerStatus() {
+    return fetch(BACKEND_URL + "/map-layers/status.json")
+      .then(function (response) { return response.json(); })
+      .then(function (data) {
+        layerStatus = data;
+        ui.feesLayer.disabled = !data.fees;
+        ui.feesLayer.parentNode.title = data.fees ? "" : "Run the water-fee model first (Water-fee model panel).";
+        if (!replayDate) {
+          setRainInfo(mapLayers.rain && !data.rain_live ? "No live rainfall is published yet." : "");
+        }
+      })
+      .catch(function () { /* backend unreachable: the layers stay as they are */ });
+  }
+
+  // Follow a Celery task (GET /digital-twin-task-status) until it finishes, at most ~5 minutes.
+  function waitForTask(taskId) {
+    var tries = 0;
+    return new Promise(function (resolve) {
+      (function poll() {
+        fetch(BACKEND_URL + "/digital-twin-task-status/" + taskId)
+          .then(function (response) { return response.json(); })
+          .then(function (task) {
+            if (task.status === "finished" || task.status === "error" || ++tries > 200) {
+              resolve(task);
+            } else {
+              setTimeout(poll, 1500);
+            }
+          })
+          .catch(function () { resolve({ status: "error", message: "Could not reach the backend." }); });
+      })();
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Shared state and public API (window.AlzetteTwin), used by the Casual mode (casual-ui.js) and the
+  // mode selector (twin-mode.js). Both modes act on the same state: a layer switched in one is
+  // switched in the other, and the date shown stays when the mode changes.
+  // ---------------------------------------------------------------------------
+  var LAYER_NAMES = ["rain", "river", "buildings", "zones", "names"];
+
+  function layerState() {
+    return {
+      rain: mapLayers.rain,
+      river: showWater,
+      buildings: showBuildings,
+      zones: mapLayers["zones-hq100"],
+      names: showNames.streets && showNames.other
+    };
+  }
+
+  // The in-depth controls showing each shared layer, kept ticked as the layers change.
+  var layerBoxes = {};
+
+  function syncBoxes() {
+    var state = layerState();
+    var boxes = {
+      rain: [state.rain], river: [state.river], buildings: [state.buildings], zones: [state.zones],
+      streets: [showNames.streets], other: [showNames.other]
+    };
+    Object.keys(layerBoxes).forEach(function (key) {
+      if (boxes[key] && layerBoxes[key].checked !== boxes[key][0]) {
+        layerBoxes[key].checked = boxes[key][0];
+      }
+    });
+  }
+
+  var notifyPending = false;
+
+  function notifyChange() {
+    if (notifyPending) {
+      return;
+    }
+    notifyPending = true;
+    Promise.resolve().then(function () {
+      notifyPending = false;
+      syncBoxes();
+      window.dispatchEvent(new CustomEvent("alzette-twin-change", { detail: twinState() }));
+    });
+  }
+
+  function clockState() {
+    var t = findTerria();
+    var clock = t && t.timelineClock;
+    if (!clock || !clock.startTime || !clock.stopTime) {
+      return null;
+    }
+    function ms(julian) { return julian.constructor.toDate(julian).getTime(); }
+    return {
+      start: ms(clock.startTime), stop: ms(clock.stopTime), current: ms(clock.currentTime),
+      playing: !!clock.shouldAnimate, multiplier: clock.multiplier
+    };
+  }
+
+  function twinState() {
+    return {
+      layers: layerState(),
+      mode: ui.mode ? ui.mode.textContent : "LIVE",
+      replayDate: replayDate,
+      scenario: scenario,
+      rainInfo: rainInfo,
+      liveInfo: ui.liveInfo ? ui.liveInfo.textContent : "",
+      uiMode: uiMode
+    };
+  }
+
+  function setLayer(name, on) {
+    on = !!on;
+    if (layerState()[name] === on) {
+      return;
+    }
+    if (name === "rain") {
+      toggleMapLayer("rain", on);
+    } else if (name === "zones") {
+      toggleMapLayer("zones-hq100", on);
+    } else if (name === "buildings") {
+      toggleBuildings(on);
+    } else if (name === "names") {
+      showNames.streets = on;
+      showNames.other = on;
+      reloadView();
+    } else if (name === "river") {
+      showWater = on;
+      updateWater();
+      notifyChange();
+    }
+  }
+
+  // Casual hides the in-depth panels and Terria's side panel; the map, its state and the date stay.
+  var uiMode = "indepth";
+
+  function findViewState() {
+    var nodes = document.querySelectorAll("body *");
+    for (var i = 0; i < nodes.length; i++) {
+      var key = Object.keys(nodes[i]).find(function (k) {
+        return k.indexOf("__reactInternalInstance$") === 0 || k.indexOf("__reactFiber$") === 0;
+      });
+      for (var fiber = key && nodes[i][key]; fiber; fiber = fiber["return"]) {
+        var props = fiber.memoizedProps;
+        if (props && props.viewState && props.viewState.terria) {
+          return props.viewState;
+        }
+      }
+    }
+    return null;
+  }
+
+  // True once a mode was chosen on the entry screen: from then on the live water may replace the
+  // start view (before, live readings only update a water view already shown).
+  var entered = false;
+
+  function setUiMode(mode) {
+    uiMode = mode === "casual" ? "casual" : "indepth";
+    if (!entered) {
+      entered = true;
+      if (!currentView && live && liveLevel && !window.location.hash.includes("/terria-date-init/")) {
+        applyLevel(liveLevel.pf, liveLevel.he, liveLevel.li);
+      }
+    }
+    document.body.classList.toggle("twin-casual", uiMode === "casual");
+    (function fullScreen(tries) {
+      var viewState = findViewState();
+      if (!viewState) {
+        // Terria's UI is not mounted yet.
+        if (tries > 0) {
+          setTimeout(function () { fullScreen(tries - 1); }, 500);
+        }
+        return;
+      }
+      var wanted = uiMode === "casual";
+      if (typeof viewState.setIsMapFullScreen === "function") {
+        viewState.setIsMapFullScreen(wanted);
+      } else {
+        viewState.isMapFullScreen = wanted;
+      }
+    })(40);
+    notifyChange();
+  }
+
+  window.AlzetteTwin = {
+    LAYER_NAMES: LAYER_NAMES,
+    getState: twinState,
+    clock: clockState,
+    setLayer: setLayer,
+    replayDay: replayDay,
+    goLive: goLive,
+    play: function (on) {
+      var t = findTerria();
+      if (t && t.timelineClock) {
+        t.timelineClock.shouldAnimate = !!on;
+        notifyChange();
+      }
+    },
+    seek: function (ms) {
+      var t = findTerria();
+      var clock = t && t.timelineClock;
+      if (clock && clock.currentTime) {
+        clock.currentTime = clock.currentTime.constructor.fromDate(new Date(ms));
+        if (t.currentViewer && t.currentViewer.notifyRepaintRequired) {
+          t.currentViewer.notifyRepaintRequired();
+        }
+      }
+    },
+    setUiMode: setUiMode
+  };
 
   var STYLE = [
     ".wl-panel{position:fixed;z-index:1000;box-sizing:border-box;max-width:calc(100vw - 16px);",
@@ -1330,7 +1760,9 @@
     ".wl-panel td{padding:3px 0}",
     ".wl-panel td.wl-km{opacity:.6;font-size:12px;text-align:right;padding-right:8px}",
     ".wl-panel td.wl-input{width:90px}",
-    ".wl-panel input[type=number],.wl-panel input[type=date]{width:100%;box-sizing:border-box;",
+    // Casual mode (twin-mode.js) shows its own panel instead of these.
+    "body.twin-casual .wl-panel,body.twin-casual #eddie-flood-cost-comparison{display:none!important}",
+    ".wl-panel input[type=number],.wl-panel input[type=date],.wl-panel input[type=datetime-local]{width:100%;box-sizing:border-box;",
     "background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:4px;color:inherit;",
     "padding:3px 6px;font:inherit;color-scheme:dark}",
     ".wl-panel input[type=range]{width:100%;margin:8px 0 6px}",
@@ -1412,8 +1844,9 @@
     panel.style.top = clampTop(typeof saved.top === "number" ? saved.top : defaults.top) + "px";
   }
 
+  // Rendered now: not closed, and not hidden by the Casual mode (whose layout must not be remembered).
   function isShown(panel) {
-    return panel.style.display !== "none";
+    return panel.style.display !== "none" && panel.getClientRects().length > 0;
   }
 
   function remember(panel, key) {
@@ -1532,6 +1965,60 @@
     return { label: label, box: box };
   }
 
+  // A drop-down list of [value, label] options.
+  function select(id, options, value, onChange) {
+    var node = document.createElement("select");
+    node.id = id;
+    options.forEach(function (entry) {
+      var option = element("option", null, entry[1]);
+      option.value = entry[0];
+      node.appendChild(option);
+    });
+    node.value = value;
+    node.addEventListener("change", function () { onChange(node.value); });
+    return node;
+  }
+
+  // A slider with its current value shown (format(value) as text), calling onInput as it moves.
+  function rangeSlider(id, min, max, step, value, format, onInput) {
+    var input = document.createElement("input");
+    input.type = "range";
+    input.id = id;
+    input.min = String(min);
+    input.max = String(max);
+    input.step = String(step);
+    input.value = String(value);
+    var shown = element("span", null, format(value));
+    input.addEventListener("input", function () {
+      var number = Number(input.value);
+      shown.textContent = format(number);
+      onInput(number);
+    });
+    return { input: input, value: shown };
+  }
+
+  // A labelled row of a settings table: label, control, and an optional unit or value text.
+  function settingRow(table, label, control, unit) {
+    var tr = element("tr");
+    tr.appendChild(element("td", null, label));
+    var cell = element("td", "wl-input");
+    cell.appendChild(control);
+    tr.appendChild(cell);
+    var after = element("td", "wl-km");
+    if (unit) {
+      after.appendChild(typeof unit === "string" ? document.createTextNode(unit) : unit);
+    }
+    tr.appendChild(after);
+    table.appendChild(tr);
+    return tr;
+  }
+
+  function percent(value) {
+    return Math.round(value * 100) + " %";
+  }
+
+  var REPLAY_SPEEDS = [["60", "1 min / s"], ["300", "5 min / s"], ["600", "10 min / s"], ["1800", "30 min / s"], ["3600", "1 h / s"]];
+
   function numberInput() {
     var input = document.createElement("input");
     input.type = "number";
@@ -1546,13 +2033,17 @@
     ["flood", "Flood"],
     ["replay", "Data replay"],
     ["live", "Live replay"],
-    ["terrain", "Terrain"]
+    ["terrain", "Terrain"],
+    ["sun", "Sun settings"],
+    ["fees", "Water-fee model"]
   ];
   // Collapsible categories of the central panel (key, title), and the one of each panel toggle.
   // Which are open is kept in localStorage; all open by default.
-  var CATEGORIES = [["names", "Names"], ["river", "River"], ["terrain", "Terrain"], ["data", "Data"]];
+  var CATEGORIES = [["layers", "Map layers"], ["names", "Names"], ["river", "River"], ["terrain", "Terrain"], ["data", "Data"]];
   // The buildings controls are a collapsible section of the Terrain category (see build).
-  var DEMO_CATEGORY = { river: "river", flood: "river", replay: "data", live: "data", terrain: "terrain" };
+  var DEMO_CATEGORY = {
+    river: "river", flood: "river", replay: "data", live: "data", terrain: "terrain", sun: "data", fees: "data"
+  };
   var CATEGORIES_KEY = "wl-categories";
 
   function loadOpenCategories() {
@@ -1767,6 +2258,7 @@
       var toggle = checkbox("water-level-control-names-" + entry[0], entry[1], function (checked) {
         toggleNames(entry[0], checked);
       });
+      layerBoxes[entry[0]] = toggle.box;
       names.appendChild(toggle.label);
     });
 
@@ -1840,18 +2332,189 @@
     flow.appendChild(element("div", "wl-note",
       "Hover the water for its estimated velocity (Manning's equation, an estimate)."));
 
+    // Look of the animated water; applied at once and kept.
+    var look3d = section(demos.river, "Water appearance");
+    var lookTable = element("table");
+    [
+      ["rippleSize", "Ripple size", 2, 20, 0.5, function (v) { return v + " m"; }],
+      ["period", "Ripple period", 1, 10, 0.5, function (v) { return v + " s"; }],
+      ["amplitude", "Wave strength", 0, 2, 0.05, function (v) { return v.toFixed(2); }],
+      ["fps", "Animation", 5, 60, 5, function (v) { return v + " fps"; }]
+    ].forEach(function (entry) {
+      var control = rangeSlider("water-level-control-water-" + entry[0], entry[2], entry[3], entry[4], waterSettings[entry[0]],
+        entry[5], function (value) {
+          waterSettings[entry[0]] = value;
+          saveSettings(WATER_KEY, waterSettings);
+        });
+      settingRow(lookTable, entry[1], control.input, control.value);
+    });
+    look3d.appendChild(lookTable);
+    look3d.appendChild(button("Reset look", function () {
+      ["rippleSize", "period", "amplitude", "fps"].forEach(function (key) {
+        waterSettings[key] = WATER_DEFAULTS[key];
+        var input = document.getElementById("water-level-control-water-" + key);
+        input.value = String(WATER_DEFAULTS[key]);
+        input.dispatchEvent(new Event("input"));
+      });
+    }, true));
+
+    // The water surface itself, shown or hidden without reloading (the level keeps following the data).
+    var waterToggle = checkbox("water-level-control-water-surface", "Water surface", function (checked) {
+      setLayer("river", checked);
+    });
+    waterToggle.box.checked = showWater;
+    layerBoxes.river = waterToggle.box;
+    categories.river.insertBefore(waterToggle.label, categories.river.firstChild);
+
+    // Map layers: rain, the official flood zones, the water-fee model's result.
+    var overlays = categories.layers;
+    var rain = checkbox("water-level-control-layer-rain", "Rain", function (checked) {
+      toggleMapLayer("rain", checked);
+    });
+    rain.box.checked = mapLayers.rain;
+    layerBoxes.rain = rain.box;
+    overlays.appendChild(rain.label);
+    ui.rainInfo = element("div", "wl-note");
+    ui.rainInfo.id = "water-level-control-rain-info";
+    overlays.appendChild(ui.rainInfo);
+    [["hq10", "Flood zone HQ10"], ["hq100", "Flood zone HQ100"], ["hqextreme", "Flood zone HQextreme"]].forEach(function (entry) {
+      var zone = checkbox("water-level-control-layer-zones-" + entry[0], entry[1], function (checked) {
+        toggleMapLayer("zones-" + entry[0], checked);
+      });
+      if (entry[0] === "hq100") {
+        layerBoxes.zones = zone.box;
+      }
+      overlays.appendChild(zone.label);
+    });
+    var feesLayer = checkbox("water-level-control-layer-fees", "Water fees (model result)", function (checked) {
+      toggleMapLayer("fees", checked);
+    });
+    ui.feesLayer = feesLayer.box;
+    overlays.appendChild(feesLayer.label);
+    overlays.appendChild(element("div", "wl-note",
+      "Flood zones: official hazard maps (HWGK 2021). Rain: latest interpolated rainfall, or the replayed day's."));
+
+    // Sun settings: dawn / dusk length and the strength of each tint of the Show sun filter.
+    var sunSection = section(demos.sun, "Show sun filter");
+    var sunTable = element("table");
+    var sunTwilight = rangeSlider("water-level-control-sun-twilight", 10, 120, 5, sunSettings.twilightMin,
+      function (v) { return v + " min"; }, function (value) {
+        sunSettings.twilightMin = value;
+        applySunSettings();
+        saveSettings(SUN_KEY, sunSettings);
+        updateSun();
+      });
+    settingRow(sunTable, "Dawn / dusk", sunTwilight.input, sunTwilight.value);
+    [["day", "Day tint"], ["twilight", "Dawn tint"], ["night", "Night tint"]].forEach(function (entry) {
+      var control = rangeSlider("water-level-control-sun-" + entry[0], 0, 1, 0.02, sunSettings[entry[0]], percent, function (value) {
+        sunSettings[entry[0]] = value;
+        applySunSettings();
+        saveSettings(SUN_KEY, sunSettings);
+        updateSun();
+      });
+      settingRow(sunTable, entry[1], control.input, control.value);
+    });
+    sunSection.appendChild(sunTable);
+    sunSection.appendChild(element("div", "wl-note",
+      "Tick Show sun in the Data category to see the filter; it follows the time shown (Luxembourg)."));
+
+    // Water-fee model (eddie_building_population): population per building and the extra water pool
+    // shared among the non-residential buildings by footprint area.
+    var fees = section(demos.fees, "Parameters");
+    var feesTable = element("table");
+    var feeVolume = document.createElement("input");
+    feeVolume.type = "number";
+    feeVolume.id = "water-level-control-fees-volume";
+    feeVolume.min = "0";
+    feeVolume.max = "1000000000";
+    feeVolume.step = "1000";
+    feeVolume.value = "100000";
+    settingRow(feesTable, "Water volume", feeVolume, "m³");
+    var feeShare = rangeSlider("water-level-control-fees-percentage", 0, 1, 0.01, 0.1, percent, function () {});
+    settingRow(feesTable, "Extra share", feeShare.input, feeShare.value);
+    var feePrice = document.createElement("input");
+    feePrice.type = "number";
+    feePrice.id = "water-level-control-fees-price";
+    feePrice.min = "0";
+    feePrice.max = "1000";
+    feePrice.step = "0.5";
+    feePrice.value = "7";
+    settingRow(feesTable, "Unit price", feePrice, "€/m³");
+    fees.appendChild(feesTable);
+    var feesNote = element("div", "wl-note");
+    feesNote.id = "water-level-control-fees-note";
+    function showFeesSummary() {
+      return fetch(BACKEND_URL + "/building-population/summary.json")
+        .then(function (response) { return response.json(); })
+        .then(function (data) {
+          if (data.status !== "success") {
+            feesNote.textContent = data.message || "No result yet.";
+            return;
+          }
+          var euro = new Intl.NumberFormat("en-IE", { maximumFractionDigits: 0 });
+          feesNote.textContent = "Last result: " + euro.format(data.buildings) + " buildings, about " +
+            euro.format(data.est_population) + " residents; " + euro.format(data.fee_buildings) +
+            " non-residential buildings share " + euro.format(data.allocated_water_volume) + " m³ for €" +
+            euro.format(data.total_cost) + " (pool " + euro.format(data.total_water_volume) + " m³ × " +
+            percent(data.extra_water_pool / data.total_water_volume || 0) + ", €" + data.unit_price + "/m³).";
+        })
+        .catch(function () { feesNote.textContent = "Could not reach the backend."; });
+    }
+    fees.appendChild(button("Run model", function () {
+      feesNote.textContent = "Running the model...";
+      fetch(BACKEND_URL + "/building-population/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          total_water_volume: Number(feeVolume.value),
+          percentage: Number(feeShare.input.value),
+          unit_price: Number(feePrice.value)
+        })
+      })
+        .then(function (response) { return response.json(); })
+        .then(function (data) {
+          if (data.status !== "processing") {
+            feesNote.textContent = data.message || "The model could not be started.";
+            return;
+          }
+          return waitForTask(data.task_id).then(function (task) {
+            if (task.status !== "finished") {
+              feesNote.textContent = "The model failed: " + (task.message || "unknown error");
+              return;
+            }
+            return Promise.all([showFeesSummary(), refreshLayerStatus()]).then(function () {
+              if (mapLayers.fees) {
+                reloadView();
+              }
+            });
+          });
+        })
+        .catch(function () { feesNote.textContent = "Could not reach the backend."; });
+    }));
+    fees.appendChild(feesNote);
+    fees.appendChild(element("div", "wl-note",
+      "Tick Water fees in Map layers to show the result on the map. The run takes about a minute."));
+    showFeesSummary();
+
     // Live replay: back to the latest stored gauge readings.
     var livePanel = section(demos.live, "Latest gauge readings");
     var liveActions = element("div", "wl-row");
-    liveActions.appendChild(button("Live level", function () {
-      live = true;
-      liveLevel = null;
-      refreshLive();
-    }, true));
+    liveActions.appendChild(button("Live level", goLive, true));
     livePanel.appendChild(liveActions);
     ui.liveInfo = element("div", "wl-note", "Loading live gauge data...");
     ui.liveInfo.id = "water-level-control-live";
     livePanel.appendChild(ui.liveInfo);
+    // How often the latest readings are checked again.
+    var pollTable = element("table");
+    var pollSelect = select("water-level-control-poll", POLL_MINUTES.map(function (value) {
+      return [String(value), value + " min"];
+    }), String(waterSettings.pollMin), function (value) {
+      waterSettings.pollMin = Number(value);
+      saveSettings(WATER_KEY, waterSettings);
+      scheduleLive();
+    });
+    settingRow(pollTable, "Check every", pollSelect);
+    livePanel.appendChild(pollTable);
 
     // Flood scenarios.
     var scenarios = section(demos.flood, "Flood scenarios");
@@ -1876,6 +2539,9 @@
     ui.report.rel = "noopener";
     ui.report.style.display = "none";
     scenarios.appendChild(ui.report);
+    ui.damage = element("div", "wl-note");
+    ui.damage.id = "water-level-control-damage";
+    scenarios.appendChild(ui.damage);
 
     // Data replay: one day of stored readings.
     var replay = section(demos.replay, "Replay a day");
@@ -1883,50 +2549,89 @@
     var day = document.createElement("input");
     day.type = "date";
     row.appendChild(day);
+    day.id = "water-level-control-replay-date";
+    ui.replayDay = day;
+    row.appendChild(day);
     row.appendChild(button("Replay day", function () {
-      if (!day.value) {
-        return;
+      if (day.value) {
+        replayDay(day.value);
       }
-      var selected = day.value;
-      // Check the day first: a day without stored readings would send Terria to a water
-      // surface that cannot load.
-      fetch(BACKEND_URL + "/terria-water-init/date/" + selected + ".json")
-        .then(function (response) {
-          if (!response.ok) {
-            return response.json().then(function (data) {
-              ui.replayInfo.textContent = data.message || "No gauge readings stored for " + selected + ".";
-            });
-          }
-          ui.replayInfo.textContent = "Replaying " + selected + ".";
-          live = false;
-          previous = null;
-          setScenarioBoxes(null);
-          scenario = null;
-          updateReportLink();
-          setMode("REPLAY");
-          replayDate = selected;
-          loadInit("date/" + selected + withoutSuffix());
-          return fetch(BACKEND_URL + "/water-level/day/" + selected + ".json")
-            .then(function (stagesResponse) { return stagesResponse.json(); })
-            .then(function (data) {
-              if (data.status === "success") {
-                data.ms = data.times.map(function (time) { return Date.parse(time); });
-                replayStages = data;
-              }
-            });
-        })
-        .catch(function () {
-          ui.replayInfo.textContent = "Could not reach the backend.";
-        });
     }));
     replay.appendChild(row);
     ui.replayInfo = element("div", "wl-note");
     ui.replayInfo.id = "water-level-control-replay";
     replay.appendChild(ui.replayInfo);
+    // Playback speed of the replay: simulated time per real second.
+    var speedTable = element("table");
+    var speedSelect = select("water-level-control-replay-speed", REPLAY_SPEEDS, String(waterSettings.replaySpeed), function (value) {
+      waterSettings.replaySpeed = Number(value);
+      saveSettings(WATER_KEY, waterSettings);
+      var t = findTerria();
+      if (replayDate && t && t.timelineClock) {
+        t.timelineClock.multiplier = waterSettings.replaySpeed;
+      }
+    });
+    settingRow(speedTable, "Speed", speedSelect);
+    replay.appendChild(speedTable);
+
+    // Rainfall of a period: interpolated now (POST /load-precipitation-period), shown in later replays.
+    var rainPeriod = section(demos.replay, "Prepare rainfall for a period");
+    rainPeriod.appendChild(element("div", "wl-note",
+      "Fetches the ASTA rain observations of the period, then interpolates them over the reach."));
+    var rainTable = element("table");
+    var rainStart = document.createElement("input");
+    rainStart.type = "datetime-local";
+    rainStart.id = "water-level-control-rain-start";
+    var rainEnd = document.createElement("input");
+    rainEnd.type = "datetime-local";
+    rainEnd.id = "water-level-control-rain-end";
+    settingRow(rainTable, "From (UTC)", rainStart);
+    settingRow(rainTable, "To (UTC)", rainEnd);
+    rainPeriod.appendChild(rainTable);
+    var rainNote = element("div", "wl-note");
+    rainNote.id = "water-level-control-rain-period-note";
+    rainPeriod.appendChild(button("Interpolate rainfall", function () {
+      if (!rainStart.value || !rainEnd.value || rainEnd.value < rainStart.value) {
+        rainNote.textContent = "Choose a start and a later end.";
+        return;
+      }
+      var startIso = rainStart.value + ":00Z", endIso = rainEnd.value + ":00Z";
+      rainNote.textContent = "Fetching the rain observations (ASTA)...";
+      fetchRainObservations(startIso, endIso)
+        .then(function (task) {
+          if (task.status !== "finished") {
+            throw new Error("The observations could not be fetched: " + (task.message || "unknown error"));
+          }
+          rainNote.textContent = "Interpolating...";
+          return fetch(BACKEND_URL + "/load-precipitation-period", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ start: startIso, end: endIso })
+          });
+        })
+        .then(function (response) { return response.json(); })
+        .then(function (data) {
+          if (data.status !== "processing") {
+            rainNote.textContent = data.message || data.status;
+            return;
+          }
+          rainNote.textContent = "Interpolating " + (data.usable_timestamps - data.already_cached) + " time steps...";
+          return waitForTask(data.task_id).then(function (task) {
+            rainNote.textContent = task.status === "finished" ? "Rainfall ready: replay a day of the period to see it." :
+              "Interpolation failed: " + (task.message || "unknown error");
+          });
+        })
+        .catch(function (error) {
+          rainNote.textContent = error && error.message && error.message.indexOf("observations") >= 0 ?
+            error.message : "Could not reach the backend.";
+        });
+    }));
+    rainPeriod.appendChild(rainNote);
 
     // Buildings: a collapsible section of the Terrain category.
     var layers = category(categories.terrain, "buildings", "Buildings", openCategories);
     var buildings = checkbox("water-level-control-buildings", "3D buildings", toggleBuildings);
+    layerBoxes.buildings = buildings.box;
     layers.appendChild(buildings.label);
     var legend = element("div", "wl-legend");
     [["#d7d2c8", "dry"], ["#ff961e", "touched by water"], ["#dc2828", "fully flooded"]].forEach(function (entry) {
@@ -1957,12 +2662,26 @@
     setMode("LIVE");
 
     refreshLive();
-    setInterval(refreshLive, LIVE_POLL_MS);
+    scheduleLive();
+    refreshLayerStatus();
     setInterval(showReplayStages, 500);
     setInterval(updateWater, 200);
     setInterval(updateSun, 250);
     window.requestAnimationFrame(animateWater);
     setupHover();
+    // Clock changes (play, pause, scrubbing in Terria's own timeline) reach the Casual mode too.
+    setInterval(function () {
+      window.dispatchEvent(new CustomEvent("alzette-twin-clock", { detail: clockState() }));
+    }, 500);
+
+    // The mode chosen on the entry screen (twin-mode.js), now and whenever it changes.
+    window.addEventListener("alzette-twin-mode", function (event) {
+      setUiMode(event.detail && event.detail.mode);
+    });
+    if (window.TwinMode && window.TwinMode.current()) {
+      setUiMode(window.TwinMode.current());
+    }
+    window.dispatchEvent(new CustomEvent("alzette-twin-ready", { detail: twinState() }));
   }
 
   if (document.readyState === "loading") {
