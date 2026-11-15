@@ -17,7 +17,8 @@
 set -euo pipefail
 
 PROJECT_DIR=$(cd "$(dirname "$0")/.." && pwd)
-BACKEND_IMAGE=eddie_antarctica-backend
+# The backend image (named after the Compose project); start.sh passes its own.
+BACKEND_IMAGE=${BACKEND_IMAGE:-eddie_antarctica-backend}
 COMPOSE=(docker compose --env-file .env --env-file api_keys.env)
 
 DEM=""

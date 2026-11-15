@@ -48,8 +48,14 @@ services:
     container_name: backend_digital_twin
     entrypoint: ["src/backend_entrypoint.sh"]
     env_file:
-      - .env
-      - api_keys.env
+      # Either the repository's single .env (../../.env, used by start.sh) or this folder's .env and
+      # api_keys.env; .env.docker-override comes last so the in-container hosts and ports win.
+      - path: .env
+        required: false
+      - path: api_keys.env
+        required: false
+      - path: ../../.env
+        required: false
       - .env.docker-override
     volumes:
       - antarctic_stored_data:/stored_data
@@ -61,9 +67,12 @@ services:
     ports:
       - "5000:5000"
     depends_on:
-      - db_postgres
-      - message_broker
-      - geoserver
+      db_postgres:
+        condition: service_healthy
+      message_broker:
+        condition: service_healthy
+      geoserver:
+        condition: service_healthy
 
   celery_worker:
     # Performs tasks such as complex computation asynchronously on behalf of backend
@@ -74,8 +83,14 @@ services:
     entrypoint: ["src/celery_worker_entrypoint.sh"]
     restart: always
     env_file:
-      - .env
-      - api_keys.env
+      # Either the repository's single .env (../../.env, used by start.sh) or this folder's .env and
+      # api_keys.env; .env.docker-override comes last so the in-container hosts and ports win.
+      - path: .env
+        required: false
+      - path: api_keys.env
+        required: false
+      - path: ../../.env
+        required: false
       - .env.docker-override
     volumes:
       # Bind host data directories to container
@@ -89,9 +104,12 @@ services:
       timeout: 5s
       retries: 10
     depends_on:
-      - db_postgres
-      - message_broker
-      - geoserver
+      db_postgres:
+        condition: service_healthy
+      message_broker:
+        condition: service_healthy
+      geoserver:
+        condition: service_healthy
     # GPU reservation stays in the default config so that on a host which has
     # an NVIDIA GPU (the project host), a plain `docker compose up -d` uses it
     # with no extra flags.
@@ -133,8 +151,14 @@ services:
     restart: always
 
     env_file:
-      - .env
-      - api_keys.env
+      # Either the repository's single .env (../../.env, used by start.sh) or this folder's .env and
+      # api_keys.env; .env.docker-override comes last so the in-container hosts and ports win.
+      - path: .env
+        required: false
+      - path: api_keys.env
+        required: false
+      - path: ../../.env
+        required: false
       - .env.docker-override
 
     volumes:
@@ -142,9 +166,12 @@ services:
       - antarctic_geoserver_data:/stored_data/geoserver
 
     depends_on:
-      - db_postgres
-      - message_broker
-      - geoserver
+      db_postgres:
+        condition: service_healthy
+      message_broker:
+        condition: service_healthy
+      geoserver:
+        condition: service_healthy
 
   geoserver:
     # Serves geospatial web data through interactions with files and database
@@ -155,7 +182,8 @@ services:
     volumes:
       - antarctic_geoserver_data:/opt/geoserver_data
     depends_on:
-      - db_postgres
+      db_postgres:
+        condition: service_healthy
     environment:
       - SKIP_DEMO_DATA=true
       - CORS_ENABLED=true
@@ -167,8 +195,10 @@ services:
     restart: always
     healthcheck:
       test: curl --fail -s http://localhost:8080/geoserver || exit 1
+      interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 30
+      start_period: 30s
 
   terria_map:
     # Front-end using terria.js

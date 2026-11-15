@@ -1,0 +1,17 @@
+# Build context of the backend image (docker/eddie.Dockerfile copies environment.yml, lib/,
+# selected_polygon.geojson and src/). Generated data and the other folders stay out, so a rebuild
+# does not upload the terrain tiles or the REM every time.
+data/
+stored_data/
+tmp/
+terriajs/
+tests/
+scripts/
+autodoc/
+.git
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+*.log
+.env
+api_keys.env

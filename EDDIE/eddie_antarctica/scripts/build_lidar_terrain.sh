@@ -17,7 +17,8 @@ set -euo pipefail
 PROJECT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 DEM="$PROJECT_DIR/data/terrain/dem_merged.tif"
 OUT="$PROJECT_DIR/data/terrain/lidar_egm2008"
-BACKEND_IMAGE=eddie_antarctica-backend
+# The backend image (named after the Compose project); start.sh passes its own.
+BACKEND_IMAGE=${BACKEND_IMAGE:-eddie_antarctica-backend}
 FORCE=0
 [[ "${1:-}" == "--force" ]] && FORCE=1
 

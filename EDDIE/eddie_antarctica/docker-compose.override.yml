@@ -68,7 +68,10 @@ services:
     entrypoint: ["/venv/bin/python", "-m", "gauge_collector"]
     command: ["serve"]
     env_file:
-      - .env
+      - path: .env
+        required: false
+      - path: ../../.env
+        required: false
       - .env.docker-override
     environment:
       - PYTHONPATH=/opt/gauge_collector
@@ -79,7 +82,8 @@ services:
     ports:
       - "5002:5002"
     depends_on:
-      - db_postgres
+      db_postgres:
+        condition: service_healthy
 
   celery_worker:
     volumes:
