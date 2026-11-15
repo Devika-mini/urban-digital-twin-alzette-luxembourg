@@ -47,8 +47,8 @@ then
     's#</body>#<script src="/water-level-control.js?v=22"></script></body>#' \
     wwwroot/index.html
 fi
-# Inject the mode selection (entry screen, Casual / In-depth switch).
-for SCRIPT in twin-mode.js
+# Inject the mode selection (entry screen, Casual / In-depth switch) and the Casual mode panel.
+for SCRIPT in twin-mode.js casual-ui.js
 do
   if ! grep -q "$SCRIPT" wwwroot/index.html
   then

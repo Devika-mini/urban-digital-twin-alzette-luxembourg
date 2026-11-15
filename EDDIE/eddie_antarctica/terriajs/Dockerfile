@@ -18,6 +18,7 @@ COPY --chown=node:node --chmod=644 date-selector.js wwwroot/date-selector.js
 COPY --chown=node:node --chmod=644 water-level-control.js wwwroot/water-level-control.js
 COPY --chown=node:node --chmod=644 flood-cost-popup.js wwwroot/flood-cost-popup.js
 COPY --chown=node:node --chmod=644 twin-mode.js wwwroot/twin-mode.js
+COPY --chown=node:node --chmod=644 casual-ui.js wwwroot/casual-ui.js
 
 COPY --chown=root:root --chmod=755 entrypoint.sh .
 SHELL ["/bin/bash", "-c"]
