@@ -357,12 +357,19 @@ wait_healthy() {
 
 check_http() {
   # From this computer, as the browser will reach them.
+  # A service can report healthy a moment before its published port answers: retry for a minute.
   command -v curl > /dev/null || return 0
-  local name url
+  local name url tries
   for name in "map|$1" "backend|$2/health-check"; do
     url=${name#*|}
-    curl -fsS -m 10 -o /dev/null "$url" ||
-      fail "The ${name%%|*} is running but does not answer at $url." "Is the port free on this computer? './start.sh logs' shows the services' logs."
+    tries=0
+    # Output to the shell's /dev/null: with MSYS_NO_PATHCONV a Windows curl cannot open "-o /dev/null".
+    until curl -fs -m 10 "$url" > /dev/null; do
+      tries=$((tries + 1))
+      [[ $tries -lt 12 ]] ||
+        fail "The ${name%%|*} is running but does not answer at $url." "Is the port free on this computer? './start.sh logs' shows the services' logs."
+      sleep 5
+    done
   done
 }
 
