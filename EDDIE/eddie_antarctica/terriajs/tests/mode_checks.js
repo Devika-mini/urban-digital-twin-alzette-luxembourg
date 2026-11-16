@@ -256,17 +256,19 @@ function microtasks() {
   assert(within("water-level-control-category-floods", floodPanel), "Floods collapsible in the Flood panel");
   assert(within("water-level-control-category-zones", floodPanel), "Zones collapsible in the Flood panel");
   equal(floodPanel.children[1].children.length, 2, "the Flood panel holds exactly two collapsibles");
-  assert(!doc.byId("water-level-control-show-flood").parentNode.className.match(/wl-category/), "Flood opened by its own button");
+  assert(within("water-level-control-show-flood", bodyOf("river")), "Flood tick box in the River category");
+  equal(doc.byId("water-level-control-show-flood").type, "checkbox", "Flood is a tick box");
 
-  // The Flood button opens and closes the Flood panel without touching what it shows.
-  var floodButton = doc.byId("water-level-control-show-flood");
+  // The Flood tick box opens and closes the Flood panel without touching what it shows.
+  var floodBox = doc.byId("water-level-control-show-flood");
   equal(floodPanel.style.display, "none", "Flood panel closed at first");
-  equal(floodButton.getAttribute("aria-pressed"), "false", "Flood button not pressed");
+  equal(floodBox.checked, false, "Flood not ticked");
   doc.byId("water-level-control-layer-zones-hq10").checked = true;
-  floodButton.dispatchEvent({ type: "click" });
+  floodBox.checked = true;
+  floodBox.dispatchEvent({ type: "change" });
   equal(floodPanel.style.display, "", "Flood panel opened");
-  equal(floodButton.getAttribute("aria-pressed"), "true", "Flood button pressed");
-  floodButton.dispatchEvent({ type: "click" });
+  floodBox.checked = false;
+  floodBox.dispatchEvent({ type: "change" });
   equal(floodPanel.style.display, "none", "Flood panel closed again");
   equal(doc.byId("water-level-control-layer-zones-hq10").checked, true, "closing the panel keeps the flood state");
   doc.byId("water-level-control-layer-zones-hq10").checked = false;

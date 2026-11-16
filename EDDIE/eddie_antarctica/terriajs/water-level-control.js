@@ -1402,7 +1402,11 @@
     if (liveTimer) {
       clearInterval(liveTimer);
     }
-    liveTimer = setInterval(refreshLive, waterSettings.pollMin * 60 * 1000);
+    // The rainfall status is checked again too, so "no live rainfall" goes away once data is published.
+    liveTimer = setInterval(function () {
+      refreshLive();
+      refreshLayerStatus();
+    }, waterSettings.pollMin * 60 * 1000);
   }
 
   // Back to the latest stored gauge readings.
@@ -1538,11 +1542,19 @@
     return fetch(BACKEND_URL + "/map-layers/status.json")
       .then(function (response) { return response.json(); })
       .then(function (data) {
+        var rainArrived = !!(layerStatus && !layerStatus.rain_live && data.rain_live);
         layerStatus = data;
         ui.feesLayer.disabled = !data.fees;
         ui.feesLayer.parentNode.title = data.fees ? "" : "Run the water-fee model first (Water-fee model panel).";
         if (!replayDate) {
+          // The note is shown only while there is really no live rainfall; it is cleared as soon as there is.
           setRainInfo(mapLayers.rain && !data.rain_live ? "No live rainfall is published yet." : "");
+          if (rainArrived && mapLayers.rain) {
+            // The rainfall was published since the view was loaded: load it again (under a new
+            // refresh number, so Terria fetches the init file again) to show it.
+            rainVersion += 1;
+            reloadView();
+          }
         }
       })
       .catch(function () { /* backend unreachable: the layers stay as they are */ });
@@ -1802,9 +1814,6 @@
     ".wl-panel button.wl-category-head[aria-expanded=false]::before{content:\"\\25b8\"}",
     ".wl-panel .wl-category-body{padding:2px 0 2px 4px}",
     ".wl-panel .wl-category-body>.wl-row{margin:6px 0 2px}",
-    // Buttons opening a panel of their own (the Flood tab): pressed while it is open.
-    ".wl-panel .wl-tabs{margin:2px 0 4px}",
-    ".wl-panel .wl-tabs button[aria-pressed=true]{background:#2c5a9c;box-shadow:inset 0 0 0 2px #7fb0f0}",
     ".wl-panel .wl-field{display:block;margin:4px 0}",
     ".wl-panel .wl-field>span{display:block;font-size:12px;opacity:.8;margin-bottom:2px}",
     ".wl-tooltip{position:fixed;z-index:2000;pointer-events:none;background:rgba(32,38,52,0.95);color:#e8ecf2;",
@@ -2033,8 +2042,7 @@
     return input;
   }
 
-  // Small panels opened from the central panel: key, toggle / panel title. The Flood panel is opened
-  // by its own button at the top of the central panel (a tab), the others by a toggle in a category.
+  // Small panels opened from the central panel: key, toggle / panel title.
   var DEMOS = [
     ["river", "River"],
     ["flood", "Flood"],
@@ -2049,7 +2057,7 @@
   var CATEGORIES = [["time", "Time"], ["rain", "Rain"], ["river", "River"], ["terrain", "Terrain & Buildings"], ["names", "Names"]];
   // The buildings controls are a collapsible section of the Terrain & Buildings category (see build).
   var DEMO_CATEGORY = {
-    river: "river", replay: "time", live: "time", terrain: "terrain", sun: "time", fees: "river"
+    river: "river", flood: "river", replay: "time", live: "time", terrain: "terrain", sun: "time", fees: "river"
   };
   var CATEGORIES_KEY = "wl-categories";
 
@@ -2106,20 +2114,16 @@
     var demos = {};
     var openCategories = loadOpenCategories();
     var categories = {};
-    // Buttons opening a panel of their own (tabs), above the categories.
-    var tabs = element("div", "wl-row wl-tabs");
-    central.body.appendChild(tabs);
     CATEGORIES.forEach(function (entry) {
       categories[entry[0]] = category(central.body, entry[0], entry[1], openCategories);
     });
     DEMOS.forEach(function (demo, index) {
       var key = demo[0];
       var small;
-      var setToggle;
       // Opening or closing a panel only shows or hides it: what it controls is left as it is.
       function show(shown) {
         small.panel.style.display = shown ? "" : "none";
-        setToggle(shown);
+        toggle.box.checked = shown;
         if (shown) {
           bringToFront(small.panel);
           // Back on screen if the window got smaller while it was closed.
@@ -2127,17 +2131,8 @@
           small.panel.style.top = clampTop(small.panel.offsetTop) + "px";
         }
       }
-      if (key === "flood") {
-        var tab = button("Flood", function () { show(small.panel.style.display === "none"); });
-        tab.id = "water-level-control-show-flood";
-        tab.title = "Flood scenarios and flood zones";
-        setToggle = function (on) { tab.setAttribute("aria-pressed", on ? "true" : "false"); };
-        tabs.appendChild(tab);
-      } else {
-        var toggle = checkbox("water-level-control-show-" + key, demo[1], show);
-        setToggle = function (on) { toggle.box.checked = on; };
-        categories[DEMO_CATEGORY[key]].appendChild(toggle.label);
-      }
+      var toggle = checkbox("water-level-control-show-" + key, demo[1], show);
+      categories[DEMO_CATEGORY[key]].appendChild(toggle.label);
       small = makePanel(key, demo[1], {
         left: Math.max(8, centralLeft - SMALL_WIDTH - 12 - index * 24),
         top: 72 + index * 36,
@@ -2149,7 +2144,6 @@
       });
       small.panel.id = "water-level-control-" + key;
       small.panel.style.display = "none";
-      setToggle(false);
       demos[key] = small.body;
     });
 
@@ -2589,7 +2583,7 @@
     settingRow(pollTable, "Check every", pollSelect);
     livePanel.appendChild(pollTable);
 
-    // Flood panel (opened by the Flood tab button): scenarios in Floods, the official hazard maps in Zones.
+    // Flood panel (opened by the Flood toggle of the River category): scenarios in Floods, the official hazard maps in Zones.
     var scenarios = category(demos.flood, "floods", "Floods", openCategories);
     var hq10 = checkbox("water-level-control-hq10", "HQ10 – 10-year flood", function (checked) {
       setScenario(checked ? "hq10" : null);

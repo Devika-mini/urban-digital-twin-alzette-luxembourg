@@ -6,7 +6,7 @@ State as of 2026-11-16, after the Casual / In-depth UI work and the In-depth pan
 **UI**: where a system can be used from the map. *Casual* is the simple panel (`terriajs/casual-ui.js`),
 *In-depth* the full panels (`terriajs/water-level-control.js`), *Terria* the generic TerriaJS catalogue / workbench.
 In-depth paths read *Category ▸ control*; the central panel's categories are, in order, **Time, Rain, River,
-Terrain & Buildings, Names**, and the **Flood** button above them opens the Flood panel (collapsibles **Floods** and **Zones**).
+Terrain & Buildings, Names**; the **Flood** tick box in River opens the Flood panel (collapsibles **Floods** and **Zones**).
 **Status**: functional · data-blocked (works, but the data it needs is missing on this machine) · backend-only
 (configured by environment variables, needs a restart) · dead (unused code).
 
@@ -18,7 +18,7 @@ Terrain & Buildings, Names**, and the **Flood** button above them opens the Floo
 | Mode selection (entry screen, mode switch) | `EDDIE/terriajs/twin-mode.js` | Entry screen; Casual / In-depth switch at the top of the map | Mode (remembered in localStorage) | Functional (new) |
 | Casual panel | `EDDIE/terriajs/casual-ui.js` | Casual | Day, play / pause, timeline; 5 on/off buttons; **panel position** (drag by the top bar, mouse or touch; kept on screen and in localStorage `casual-panel-position`; double-click the bar or ↺ to reset) | Functional |
 | Shared twin state and API (`window.AlzetteTwin`) | `EDDIE/terriajs/water-level-control.js` | Used by both modes | – | Functional (new) |
-| In-depth central panel and movable panels | `water-level-control.js` (`build`, `makePanel`) | In-depth | Panel position / size, open categories (kept); Flood button opens / closes the Flood panel (state kept) | Functional |
+| In-depth central panel and movable panels | `water-level-control.js` (`build`, `makePanel`) | In-depth | Panel position / size, open categories (kept); the River ▸ Flood tick box opens / closes the Flood panel (state kept) | Functional |
 | 3D water surface (animated mesh, flow arrows, velocity on hover) | `water-level-control.js` (`buildLevel`, `updateWater`); backend `eddie_water_level/water_surface.py`, `flood_grid.py`, `flood_sections.py`, `rem.py` | Casual *Show river*; In-depth River ▸ Water surface, River ▸ River panel | Show / hide; flow arrows; **ripple size, ripple period, wave strength, animation fps** (new) | Functional |
 | Gauge levels: live, manual, per-gauge use, fly to gauge | `water-level-control.js`; `eddie_water_level/blueprint.py` (`/water-level/*`) | In-depth River ▸ River panel, Time ▸ Live replay panel; Casual *Back to now* | Stage per gauge, common slider, gauges used, **live check interval** (new) | Functional |
 | Gauge collector service (heichwaasser.lu → `water_level_history`) | `gauge_collector/` (port 5002, every 15 min) | Indirect (live level, replay days) | `COLLECT_INTERVAL_MIN` | Functional, backend-only (its HTTP API has no CORS, so it is not called from the map) |
@@ -35,7 +35,7 @@ Terrain & Buildings, Names**, and the **Flood** button above them opens the Floo
 | Slope shading | `eddie_water_level/slope_shading.py` | In-depth Terrain & Buildings ▸ Terrain panel | Start angle, full angle, colour, opacity | Functional |
 | REM view (height above the river, contours) | `eddie_water_level/rem.py` | In-depth Terrain & Buildings ▸ REM view (style in the Terrain panel) | Contour interval, opacity | Functional |
 | Sun filter (tint from the sun's position at the time shown) | `water-level-control.js` (`SUN`, `sunTint`) | In-depth Time ▸ Show sun, Time ▸ Sun settings panel | Dawn / dusk length, day / dawn / night tint strength | Functional |
-| Rain: latest interpolated rainfall (live / manual views) | `eddie_precip_interpolation/tasks.py` (`derive_live_precipitation`, every 15 min) → GeoServer `precip_live_test` | Casual *Show rain*; In-depth Rain ▸ Show rain | Show / hide | Wired; data-blocked: no layer is published here, so the layer is left out and the panels say so |
+| Rain: latest interpolated rainfall (live / manual views) | `eddie_precip_interpolation/tasks.py` (`derive_live_precipitation`, every 15 min) → GeoServer `precip_live_test` | Casual *Show rain*; In-depth Rain ▸ Show rain | Show / hide | Wired; data-blocked: no layer is published here, so the layer is left out and the panels say so. The note is shown only while GeoServer has no live rainfall; the status is checked again at every live check, and once rainfall is published the note goes and the layer is loaded |
 | Rain: interpolated history of a replayed day | `derive_precipitation_history`; `/load-precipitation-period` | Automatic in day replays (Casual and In-depth) with the rain layer on; In-depth Rain ▸ Prepare a period (closed by default) | Period | Functional on a fresh stack (verified with `start.sh`: 3 Nov 2026, 23 hourly surfaces); fails on a database created by the old template (see notes) |
 | ASTA rain observations ingest | `eddie_alzette_ingest/` (`fetch_precipitation`) | **New** route `/alzette-ingest/precipitation`, called by the rain preparation | Period (backfill) | Functional (verified: 3 Nov 2026 fetched) |
 | Digital Twin date (precipitation + water-level WMS through time) | `EDDIE/terriajs/date-selector.js`; `/load-digital-twin-date`, `/terria-date-init/…` | In-depth Time ▸ Digital Twin date | Day | Functional; reloads the page by design (GeoServer time domain) |
@@ -49,7 +49,7 @@ Terrain & Buildings, Names**, and the **Flood** button above them opens the Floo
 
 - **Map layers category removed.** Every control was moved, none dropped: *Rain* → Rain ▸ Show rain (with its status line);
   *Flood zone HQ10 / HQ100 / HQextreme* → Flood panel ▸ Zones; *Water fees (model result)* → River, next to the Water-fee model toggle.
-- **Flood panel** (opened by the Flood button at the top of the central panel; it used to be a toggle in River):
+- **Flood panel** (opened by the Flood tick box in River):
   *Floods* holds the three scenarios, the report link and the damage estimate; *Zones* the three official hazard-map layers.
   Opening or closing it only shows or hides it.
 - **Rain category** (new): Show rain, the rainfall status, and *Prepare a period* (moved out of the Data replay panel).
@@ -96,4 +96,4 @@ Set in `EDDIE/docker-compose.override.yml`, applied on restart; they shape preco
   update a water view already on the map (the existing behaviour).
 - **Tests.** `EDDIE/terriajs/tests/mode_checks.js` runs with Node (the `terria_map` container has it); the pytest wrapper is
   `EDDIE/tests/test_twin_modes_frontend.py` and skips without Node. It checks the Casual panel's clamping and stored position,
-  where every In-depth control lives, and that the Flood button opens and closes its panel without changing the flood state.
+  where every In-depth control lives, and that the Flood tick box opens and closes its panel without changing the flood state.
