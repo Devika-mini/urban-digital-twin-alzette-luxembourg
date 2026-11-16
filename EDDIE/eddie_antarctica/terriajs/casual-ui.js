@@ -2,6 +2,9 @@
 // (date, play / pause, a timeline to drag) and five large on/off buttons. Everything else keeps
 // its default. Shown while the mode chosen in twin-mode.js is "casual".
 //
+// The panel can be moved by its top bar (mouse, touch or pen), always stays fully on screen, and
+// keeps its place in localStorage; double-clicking the bar or its reset button puts it back.
+//
 // It holds no state of its own: every button and the timeline act on window.AlzetteTwin
 // (water-level-control.js), the same state the In-depth panels use, and it redraws itself from
 // the "alzette-twin-change" and "alzette-twin-clock" events.
@@ -18,6 +21,8 @@
   ];
   // Positions of the timeline slider over a replayed day.
   var STEPS = 1000;
+  // Where the panel was moved to ({left, top} in px), kept between sessions.
+  var POSITION_KEY = "casual-panel-position";
 
   // Switch one layer: on if it is off, off if it is on, in the shared state.
   function toggle(api, name) {
@@ -42,6 +47,35 @@
     var date = new Date(ms);
     function two(n) { return (n < 10 ? "0" : "") + n; }
     return two(date.getUTCHours()) + ":" + two(date.getUTCMinutes());
+  }
+
+  // Top-left corner of a width x height panel moved to (left, top), kept inside a viewWidth x viewHeight
+  // window. A panel larger than the window sticks to its top-left corner.
+  function clampPosition(left, top, width, height, viewWidth, viewHeight) {
+    return {
+      left: Math.round(Math.max(0, Math.min(left, viewWidth - width))),
+      top: Math.round(Math.max(0, Math.min(top, viewHeight - height)))
+    };
+  }
+
+  function loadPosition(storage) {
+    try {
+      var stored = JSON.parse(storage.getItem(POSITION_KEY));
+      if (stored && isFinite(stored.left) && isFinite(stored.top)) {
+        return { left: Number(stored.left), top: Number(stored.top) };
+      }
+    } catch (e) { /* storage unavailable or invalid: default place */ }
+    return null;
+  }
+
+  function savePosition(storage, position) {
+    try {
+      if (position) {
+        storage.setItem(POSITION_KEY, JSON.stringify(position));
+      } else {
+        storage.removeItem(POSITION_KEY);
+      }
+    } catch (e) { /* storage unavailable: the position is not kept */ }
   }
 
   // The sentence at the top of the panel: what the map shows now.
@@ -69,6 +103,14 @@
     "background:rgba(32,38,52,0.95);color:#e8ecf2;box-shadow:0 6px 24px rgba(0,0,0,0.4);",
     "font:16px/1.4 Nunito,\"Segoe UI\",sans-serif}",
     "#casual-panel[hidden]{display:none}",
+    "#casual-panel.cs-moved{transform:none;bottom:auto}",
+    "#casual-panel .cs-handle{display:flex;align-items:center;gap:8px;margin:-8px -6px 6px;padding:2px 6px;cursor:grab;",
+    "touch-action:none;user-select:none;-webkit-user-select:none;border-radius:8px;opacity:.6}",
+    "#casual-panel .cs-handle:hover{opacity:.95;background:rgba(255,255,255,0.06)}",
+    "#casual-panel.cs-dragging .cs-handle{cursor:grabbing;opacity:.95}",
+    "#casual-panel .cs-grip{flex:1;text-align:center;font-size:16px;line-height:18px;letter-spacing:1px}",
+    "#casual-panel button.cs-reset{font-size:15px;font-weight:400;padding:0 8px;background:none;color:inherit}",
+    "#casual-panel button.cs-reset[hidden]{display:none}",
     "#casual-panel .cs-status{font-weight:700;margin:0 0 10px}",
     "#casual-panel .cs-note{font-size:13px;opacity:.75;margin-top:4px;min-height:1em}",
     "#casual-panel .cs-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}",
@@ -89,7 +131,7 @@
     "#casual-panel .cs-toggle .cs-state{font-size:12px;font-weight:700;letter-spacing:.06em}",
     "#casual-panel .cs-toggle[aria-pressed=true]{background:rgba(63,111,181,0.35);border-color:#7fb0f0;opacity:1}",
     "#casual-panel .cs-toggle[aria-pressed=true] .cs-icon{filter:none;opacity:1}",
-    "@media (max-width:520px){#casual-panel{bottom:8px;padding:12px}#casual-panel .cs-toggles{grid-template-columns:repeat(2,1fr)}}"
+    "@media (max-width:520px){#casual-panel{bottom:8px;padding:12px}#casual-panel.cs-moved{bottom:auto}#casual-panel .cs-toggles{grid-template-columns:repeat(2,1fr)}}"
   ].join("");
 
   function element(doc, tag, className, text) {
@@ -113,6 +155,19 @@
     panel.id = "casual-panel";
     panel.hidden = true;
     panel.setAttribute("aria-label", "Alzette twin, simple view");
+
+    // The bar to move the panel by: the only place a drag starts, so buttons and sliders never move it.
+    var handle = element(doc, "div", "cs-handle");
+    handle.id = "casual-handle";
+    handle.title = "Drag to move the panel. Double-click to put it back.";
+    handle.appendChild(element(doc, "span", "cs-grip", "\u2022\u2022\u2022\u2022\u2022\u2022"));
+    var reset = element(doc, "button", "cs-reset", "\u21ba");
+    reset.type = "button";
+    reset.id = "casual-reset-position";
+    reset.title = "Put the panel back in its place";
+    reset.setAttribute("aria-label", "Put the panel back in its place");
+    handle.appendChild(reset);
+    panel.appendChild(handle);
     var status = element(doc, "p", "cs-status", "Loading the twin...");
     status.id = "casual-status";
     status.setAttribute("aria-live", "polite");
@@ -180,6 +235,78 @@
     });
     panel.appendChild(toggles);
     doc.body.appendChild(panel);
+
+    // Moving the panel: a stored position is applied clamped to the window, and clamped again
+    // whenever the window changes size or the panel is shown again.
+    var position = loadPosition(root.localStorage);
+
+    function applyPosition() {
+      reset.hidden = !position;
+      panel.classList.toggle("cs-moved", !!position);
+      if (!position) {
+        panel.style.left = "";
+        panel.style.top = "";
+        return;
+      }
+      var placed = clampPosition(position.left, position.top, panel.offsetWidth, panel.offsetHeight,
+        root.innerWidth, root.innerHeight);
+      panel.style.left = placed.left + "px";
+      panel.style.top = placed.top + "px";
+    }
+
+    function resetPosition() {
+      position = null;
+      savePosition(root.localStorage, null);
+      applyPosition();
+    }
+
+    handle.addEventListener("pointerdown", function (event) {
+      if (event.target.closest("button") || (event.pointerType === "mouse" && event.button !== 0)) {
+        return;
+      }
+      event.preventDefault();
+      var rect = panel.getBoundingClientRect();
+      var dx = event.clientX - rect.left;
+      var dy = event.clientY - rect.top;
+      var pointerId = event.pointerId;
+      // Follow this pointer even over the map or outside the window; the map never sees the drag.
+      try { handle.setPointerCapture(pointerId); } catch (e) { /* pointer already gone */ }
+      panel.classList.add("cs-dragging");
+      function move(e) {
+        if (e.pointerId !== pointerId) {
+          return;
+        }
+        position = clampPosition(e.clientX - dx, e.clientY - dy, panel.offsetWidth, panel.offsetHeight,
+          root.innerWidth, root.innerHeight);
+        applyPosition();
+      }
+      function end(e) {
+        if (e.pointerId !== pointerId) {
+          return;
+        }
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", end);
+        handle.removeEventListener("pointercancel", end);
+        panel.classList.remove("cs-dragging");
+        if (position) {
+          savePosition(root.localStorage, position);
+        }
+      }
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", end);
+      handle.addEventListener("pointercancel", end);
+    });
+    handle.addEventListener("dblclick", function (event) {
+      if (!event.target.closest("button")) {
+        resetPosition();
+      }
+    });
+    reset.addEventListener("click", resetPosition);
+    root.addEventListener("resize", function () {
+      if (!panel.hidden) {
+        applyPosition();
+      }
+    });
 
     var replaying = false;
     var dragging = false;
@@ -265,10 +392,15 @@
       if (!panel.hidden && root.AlzetteTwin) {
         render(root.AlzetteTwin.getState());
       }
+      if (!panel.hidden) {
+        // Its size is known only once shown (and the window may have changed meanwhile).
+        applyPosition();
+      }
     });
     if (root.AlzetteTwin) {
       render(root.AlzetteTwin.getState());
     }
+    applyPosition();
   }
 
   root.CasualUI = {
@@ -278,7 +410,11 @@
     sliderToMs: sliderToMs,
     msToSlider: msToSlider,
     formatClock: formatClock,
-    statusText: statusText
+    statusText: statusText,
+    clampPosition: clampPosition,
+    loadPosition: loadPosition,
+    savePosition: savePosition,
+    POSITION_KEY: POSITION_KEY
   };
 
   if (root.document) {

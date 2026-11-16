@@ -1784,7 +1784,7 @@
     ".wl-panel select{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:4px;",
     "color:inherit;padding:2px 4px;font:inherit;color-scheme:dark}",
     ".wl-panel .wl-ramp{height:8px;border-radius:2px;margin-top:6px}",
-    // The Digital Twin date box (date-selector.js) inside the Data category: no longer floating.
+    // The Digital Twin date box (date-selector.js) inside the Time category: no longer floating.
     ".wl-panel #dt-date-box{position:static;width:auto;padding:2px 0;background:none;box-shadow:none;",
     "border-radius:0;z-index:auto;color:inherit;font:inherit}",
     ".wl-panel #dt-date-box h3{display:none}",
@@ -1801,6 +1801,12 @@
     ".wl-panel button.wl-category-head::before{content:\"\\25be\";display:inline-block;width:10px}",
     ".wl-panel button.wl-category-head[aria-expanded=false]::before{content:\"\\25b8\"}",
     ".wl-panel .wl-category-body{padding:2px 0 2px 4px}",
+    ".wl-panel .wl-category-body>.wl-row{margin:6px 0 2px}",
+    // Buttons opening a panel of their own (the Flood tab): pressed while it is open.
+    ".wl-panel .wl-tabs{margin:2px 0 4px}",
+    ".wl-panel .wl-tabs button[aria-pressed=true]{background:#2c5a9c;box-shadow:inset 0 0 0 2px #7fb0f0}",
+    ".wl-panel .wl-field{display:block;margin:4px 0}",
+    ".wl-panel .wl-field>span{display:block;font-size:12px;opacity:.8;margin-bottom:2px}",
     ".wl-tooltip{position:fixed;z-index:2000;pointer-events:none;background:rgba(32,38,52,0.95);color:#e8ecf2;",
     "padding:3px 8px;border-radius:4px;font:12px/1.4 Nunito,\"Segoe UI\",sans-serif;white-space:nowrap}"
   ].join("");
@@ -2027,7 +2033,8 @@
     return input;
   }
 
-  // Small panels opened from the central panel: key, toggle / panel title.
+  // Small panels opened from the central panel: key, toggle / panel title. The Flood panel is opened
+  // by its own button at the top of the central panel (a tab), the others by a toggle in a category.
   var DEMOS = [
     ["river", "River"],
     ["flood", "Flood"],
@@ -2038,11 +2045,11 @@
     ["fees", "Water-fee model"]
   ];
   // Collapsible categories of the central panel (key, title), and the one of each panel toggle.
-  // Which are open is kept in localStorage; all open by default.
-  var CATEGORIES = [["layers", "Map layers"], ["names", "Names"], ["river", "River"], ["terrain", "Terrain"], ["data", "Data"]];
-  // The buildings controls are a collapsible section of the Terrain category (see build).
+  // Which are open is kept in localStorage; open by default unless said otherwise.
+  var CATEGORIES = [["time", "Time"], ["rain", "Rain"], ["river", "River"], ["terrain", "Terrain & Buildings"], ["names", "Names"]];
+  // The buildings controls are a collapsible section of the Terrain & Buildings category (see build).
   var DEMO_CATEGORY = {
-    river: "river", flood: "river", replay: "data", live: "data", terrain: "terrain", sun: "data", fees: "data"
+    river: "river", replay: "time", live: "time", terrain: "terrain", sun: "time", fees: "river"
   };
   var CATEGORIES_KEY = "wl-categories";
 
@@ -2056,7 +2063,7 @@
     return {};
   }
 
-  function category(parent, key, title, open) {
+  function category(parent, key, title, open, closedByDefault) {
     var node = element("div", "wl-category");
     var head = element("button", "wl-category-head", title);
     head.type = "button";
@@ -2066,7 +2073,7 @@
       head.setAttribute("aria-expanded", isOpen ? "true" : "false");
       body.style.display = isOpen ? "" : "none";
     }
-    show(open[key] !== false);
+    show(Object.prototype.hasOwnProperty.call(open, key) ? open[key] !== false : !closedByDefault);
     head.addEventListener("click", function () {
       open[key] = body.style.display === "none";
       show(open[key]);
@@ -2099,21 +2106,38 @@
     var demos = {};
     var openCategories = loadOpenCategories();
     var categories = {};
+    // Buttons opening a panel of their own (tabs), above the categories.
+    var tabs = element("div", "wl-row wl-tabs");
+    central.body.appendChild(tabs);
     CATEGORIES.forEach(function (entry) {
       categories[entry[0]] = category(central.body, entry[0], entry[1], openCategories);
     });
     DEMOS.forEach(function (demo, index) {
       var key = demo[0];
       var small;
-      var toggle = checkbox("water-level-control-show-" + key, demo[1], function (checked) {
-        small.panel.style.display = checked ? "" : "none";
-        if (checked) {
+      var setToggle;
+      // Opening or closing a panel only shows or hides it: what it controls is left as it is.
+      function show(shown) {
+        small.panel.style.display = shown ? "" : "none";
+        setToggle(shown);
+        if (shown) {
           bringToFront(small.panel);
           // Back on screen if the window got smaller while it was closed.
           small.panel.style.left = clampLeft(small.panel.offsetLeft) + "px";
           small.panel.style.top = clampTop(small.panel.offsetTop) + "px";
         }
-      });
+      }
+      if (key === "flood") {
+        var tab = button("Flood", function () { show(small.panel.style.display === "none"); });
+        tab.id = "water-level-control-show-flood";
+        tab.title = "Flood scenarios and flood zones";
+        setToggle = function (on) { tab.setAttribute("aria-pressed", on ? "true" : "false"); };
+        tabs.appendChild(tab);
+      } else {
+        var toggle = checkbox("water-level-control-show-" + key, demo[1], show);
+        setToggle = function (on) { toggle.box.checked = on; };
+        categories[DEMO_CATEGORY[key]].appendChild(toggle.label);
+      }
       small = makePanel(key, demo[1], {
         left: Math.max(8, centralLeft - SMALL_WIDTH - 12 - index * 24),
         top: 72 + index * 36,
@@ -2121,12 +2145,11 @@
       }, function () {
         // Closing the panel unticks its toggle.
         remember(small.panel, key);
-        small.panel.style.display = "none";
-        toggle.box.checked = false;
+        show(false);
       });
       small.panel.id = "water-level-control-" + key;
       small.panel.style.display = "none";
-      categories[DEMO_CATEGORY[key]].appendChild(toggle.label);
+      setToggle(false);
       demos[key] = small.body;
     });
 
@@ -2135,7 +2158,7 @@
       showSun = checked;
       updateSun();
     });
-    categories.data.appendChild(sun.label);
+    categories.time.appendChild(sun.label);
 
     // REM view: height above the river as colour, with contours. Off by default; style in the Terrain panel.
     var remToggle = checkbox("water-level-control-rem", "REM view", function (checked) {
@@ -2208,7 +2231,7 @@
     shading.appendChild(element("div", "wl-note",
       "Slopes steeper than the start angle get darker up to the full-colour angle; streets and gentle slopes stay clear."));
 
-    // REM view: contour interval and opacity (shown with the REM view toggle of the Terrain category).
+    // REM view: contour interval and opacity (shown with the REM view toggle of the Terrain & Buildings category).
     var remSection = section(demos.terrain, "REM view");
     var remTable = element("table");
     var intervalSelect = document.createElement("select");
@@ -2250,7 +2273,7 @@
     rampLegend.appendChild(element("span", null, "20 m above"));
     remSection.appendChild(rampLegend);
     remSection.appendChild(element("div", "wl-note",
-      "Height of the ground above the river's own surface in the LiDAR DEM (Relative Elevation Model). Tick REM view in the Terrain category to show it."));
+      "Height of the ground above the river's own surface in the LiDAR DEM (Relative Elevation Model). Tick REM view in Terrain & Buildings to show it."));
 
     // Place names, shown as small 3D points (full name on hover). Both off by default.
     var names = categories.names;
@@ -2366,33 +2389,25 @@
     layerBoxes.river = waterToggle.box;
     categories.river.insertBefore(waterToggle.label, categories.river.firstChild);
 
-    // Map layers: rain, the official flood zones, the water-fee model's result.
-    var overlays = categories.layers;
-    var rain = checkbox("water-level-control-layer-rain", "Rain", function (checked) {
-      toggleMapLayer("rain", checked);
-    });
-    rain.box.checked = mapLayers.rain;
-    layerBoxes.rain = rain.box;
-    overlays.appendChild(rain.label);
-    ui.rainInfo = element("div", "wl-note");
-    ui.rainInfo.id = "water-level-control-rain-info";
-    overlays.appendChild(ui.rainInfo);
-    [["hq10", "Flood zone HQ10"], ["hq100", "Flood zone HQ100"], ["hqextreme", "Flood zone HQextreme"]].forEach(function (entry) {
-      var zone = checkbox("water-level-control-layer-zones-" + entry[0], entry[1], function (checked) {
-        toggleMapLayer("zones-" + entry[0], checked);
-      });
-      if (entry[0] === "hq100") {
-        layerBoxes.zones = zone.box;
-      }
-      overlays.appendChild(zone.label);
-    });
+    // The water-fee model's result on the map, next to the model's own panel toggle (River category).
     var feesLayer = checkbox("water-level-control-layer-fees", "Water fees (model result)", function (checked) {
       toggleMapLayer("fees", checked);
     });
     ui.feesLayer = feesLayer.box;
-    overlays.appendChild(feesLayer.label);
-    overlays.appendChild(element("div", "wl-note",
-      "Flood zones: official hazard maps (HWGK 2021). Rain: latest interpolated rainfall, or the replayed day's."));
+    categories.river.appendChild(feesLayer.label);
+
+    // Rain: the rainfall layer, what it shows, and the preparation of a period's rainfall.
+    var rain = checkbox("water-level-control-layer-rain", "Show rain", function (checked) {
+      toggleMapLayer("rain", checked);
+    });
+    rain.box.checked = mapLayers.rain;
+    layerBoxes.rain = rain.box;
+    categories.rain.appendChild(rain.label);
+    ui.rainInfo = element("div", "wl-note");
+    ui.rainInfo.id = "water-level-control-rain-info";
+    categories.rain.appendChild(ui.rainInfo);
+    categories.rain.appendChild(element("div", "wl-note",
+      "Latest interpolated rainfall, or the replayed day's (prepared automatically for a replayed day)."));
 
     // Sun settings: dawn / dusk length and the strength of each tint of the Show sun filter.
     var sunSection = section(demos.sun, "Show sun filter");
@@ -2416,7 +2431,7 @@
     });
     sunSection.appendChild(sunTable);
     sunSection.appendChild(element("div", "wl-note",
-      "Tick Show sun in the Data category to see the filter; it follows the time shown (Luxembourg)."));
+      "Tick Show sun in the Time category to see the filter; it follows the time shown (Luxembourg)."));
 
     // Water-fee model (eddie_building_population): population per building and the extra water pool
     // shared among the non-residential buildings by footprint area.
@@ -2493,104 +2508,29 @@
     }));
     fees.appendChild(feesNote);
     fees.appendChild(element("div", "wl-note",
-      "Tick Water fees in Map layers to show the result on the map. The run takes about a minute."));
+      "Tick Water fees in the River category to show the result on the map. The run takes about a minute."));
     showFeesSummary();
 
-    // Live replay: back to the latest stored gauge readings.
-    var livePanel = section(demos.live, "Latest gauge readings");
-    var liveActions = element("div", "wl-row");
-    liveActions.appendChild(button("Live level", goLive, true));
-    livePanel.appendChild(liveActions);
-    ui.liveInfo = element("div", "wl-note", "Loading live gauge data...");
-    ui.liveInfo.id = "water-level-control-live";
-    livePanel.appendChild(ui.liveInfo);
-    // How often the latest readings are checked again.
-    var pollTable = element("table");
-    var pollSelect = select("water-level-control-poll", POLL_MINUTES.map(function (value) {
-      return [String(value), value + " min"];
-    }), String(waterSettings.pollMin), function (value) {
-      waterSettings.pollMin = Number(value);
-      saveSettings(WATER_KEY, waterSettings);
-      scheduleLive();
-    });
-    settingRow(pollTable, "Check every", pollSelect);
-    livePanel.appendChild(pollTable);
-
-    // Flood scenarios.
-    var scenarios = section(demos.flood, "Flood scenarios");
-    var hq10 = checkbox("water-level-control-hq10", "HQ10 – 10-year flood", function (checked) {
-      setScenario(checked ? "hq10" : null);
-    });
-    var hq100 = checkbox("water-level-control-hq100", "HQ100 – 100-year flood", function (checked) {
-      setScenario(checked ? "hq100" : null);
-    });
-    var hqextreme = checkbox("water-level-control-hqextreme", "HQextreme – extreme flood", function (checked) {
-      setScenario(checked ? "hqextreme" : null);
-    });
-    ui.hq10 = hq10.box;
-    ui.hq100 = hq100.box;
-    ui.hqextreme = hqextreme.box;
-    scenarios.appendChild(hq10.label);
-    scenarios.appendChild(hq100.label);
-    scenarios.appendChild(hqextreme.label);
-    ui.report = element("a");
-    ui.report.id = "water-level-control-report";
-    ui.report.target = "_blank";
-    ui.report.rel = "noopener";
-    ui.report.style.display = "none";
-    scenarios.appendChild(ui.report);
-    ui.damage = element("div", "wl-note");
-    ui.damage.id = "water-level-control-damage";
-    scenarios.appendChild(ui.damage);
-
-    // Data replay: one day of stored readings.
-    var replay = section(demos.replay, "Replay a day");
-    var row = element("div", "wl-row");
-    var day = document.createElement("input");
-    day.type = "date";
-    row.appendChild(day);
-    day.id = "water-level-control-replay-date";
-    ui.replayDay = day;
-    row.appendChild(day);
-    row.appendChild(button("Replay day", function () {
-      if (day.value) {
-        replayDay(day.value);
-      }
-    }));
-    replay.appendChild(row);
-    ui.replayInfo = element("div", "wl-note");
-    ui.replayInfo.id = "water-level-control-replay";
-    replay.appendChild(ui.replayInfo);
-    // Playback speed of the replay: simulated time per real second.
-    var speedTable = element("table");
-    var speedSelect = select("water-level-control-replay-speed", REPLAY_SPEEDS, String(waterSettings.replaySpeed), function (value) {
-      waterSettings.replaySpeed = Number(value);
-      saveSettings(WATER_KEY, waterSettings);
-      var t = findTerria();
-      if (replayDate && t && t.timelineClock) {
-        t.timelineClock.multiplier = waterSettings.replaySpeed;
-      }
-    });
-    settingRow(speedTable, "Speed", speedSelect);
-    replay.appendChild(speedTable);
-
     // Rainfall of a period: interpolated now (POST /load-precipitation-period), shown in later replays.
-    var rainPeriod = section(demos.replay, "Prepare rainfall for a period");
+    var rainPeriod = category(categories.rain, "rain-period", "Prepare a period", openCategories, true);
     rainPeriod.appendChild(element("div", "wl-note",
       "Fetches the ASTA rain observations of the period, then interpolates them over the reach."));
-    var rainTable = element("table");
     var rainStart = document.createElement("input");
     rainStart.type = "datetime-local";
     rainStart.id = "water-level-control-rain-start";
     var rainEnd = document.createElement("input");
     rainEnd.type = "datetime-local";
     rainEnd.id = "water-level-control-rain-end";
-    settingRow(rainTable, "From (UTC)", rainStart);
-    settingRow(rainTable, "To (UTC)", rainEnd);
-    rainPeriod.appendChild(rainTable);
+    [["From (UTC)", rainStart], ["To (UTC)", rainEnd]].forEach(function (entry) {
+      var field = element("label", "wl-field");
+      field.appendChild(element("span", null, entry[0]));
+      field.appendChild(entry[1]);
+      rainPeriod.appendChild(field);
+    });
     var rainNote = element("div", "wl-note");
     rainNote.id = "water-level-control-rain-period-note";
-    rainPeriod.appendChild(button("Interpolate rainfall", function () {
+    var rainActions = element("div", "wl-row");
+    rainActions.appendChild(button("Interpolate rainfall", function () {
       if (!rainStart.value || !rainEnd.value || rainEnd.value < rainStart.value) {
         rainNote.textContent = "Choose a start and a later end.";
         return;
@@ -2626,9 +2566,100 @@
             error.message : "Could not reach the backend.";
         });
     }));
+    rainPeriod.appendChild(rainActions);
     rainPeriod.appendChild(rainNote);
 
-    // Buildings: a collapsible section of the Terrain category.
+    // Live replay: back to the latest stored gauge readings.
+    var livePanel = section(demos.live, "Latest gauge readings");
+    var liveActions = element("div", "wl-row");
+    liveActions.appendChild(button("Live level", goLive, true));
+    livePanel.appendChild(liveActions);
+    ui.liveInfo = element("div", "wl-note", "Loading live gauge data...");
+    ui.liveInfo.id = "water-level-control-live";
+    livePanel.appendChild(ui.liveInfo);
+    // How often the latest readings are checked again.
+    var pollTable = element("table");
+    var pollSelect = select("water-level-control-poll", POLL_MINUTES.map(function (value) {
+      return [String(value), value + " min"];
+    }), String(waterSettings.pollMin), function (value) {
+      waterSettings.pollMin = Number(value);
+      saveSettings(WATER_KEY, waterSettings);
+      scheduleLive();
+    });
+    settingRow(pollTable, "Check every", pollSelect);
+    livePanel.appendChild(pollTable);
+
+    // Flood panel (opened by the Flood tab button): scenarios in Floods, the official hazard maps in Zones.
+    var scenarios = category(demos.flood, "floods", "Floods", openCategories);
+    var hq10 = checkbox("water-level-control-hq10", "HQ10 – 10-year flood", function (checked) {
+      setScenario(checked ? "hq10" : null);
+    });
+    var hq100 = checkbox("water-level-control-hq100", "HQ100 – 100-year flood", function (checked) {
+      setScenario(checked ? "hq100" : null);
+    });
+    var hqextreme = checkbox("water-level-control-hqextreme", "HQextreme – extreme flood", function (checked) {
+      setScenario(checked ? "hqextreme" : null);
+    });
+    ui.hq10 = hq10.box;
+    ui.hq100 = hq100.box;
+    ui.hqextreme = hqextreme.box;
+    scenarios.appendChild(hq10.label);
+    scenarios.appendChild(hq100.label);
+    scenarios.appendChild(hqextreme.label);
+    ui.report = element("a");
+    ui.report.id = "water-level-control-report";
+    ui.report.target = "_blank";
+    ui.report.rel = "noopener";
+    ui.report.style.display = "none";
+    scenarios.appendChild(ui.report);
+    ui.damage = element("div", "wl-note");
+    ui.damage.id = "water-level-control-damage";
+    scenarios.appendChild(ui.damage);
+    var zones = category(demos.flood, "zones", "Zones", openCategories);
+    [["hq10", "Flood zone HQ10"], ["hq100", "Flood zone HQ100"], ["hqextreme", "Flood zone HQextreme"]].forEach(function (entry) {
+      var zone = checkbox("water-level-control-layer-zones-" + entry[0], entry[1], function (checked) {
+        toggleMapLayer("zones-" + entry[0], checked);
+      });
+      if (entry[0] === "hq100") {
+        layerBoxes.zones = zone.box;
+      }
+      zones.appendChild(zone.label);
+    });
+    zones.appendChild(element("div", "wl-note",
+      "Official flood hazard maps (HWGK 2021): the area each flood would cover. Shown on top of the map."));
+
+    // Data replay: one day of stored readings.
+    var replay = section(demos.replay, "Replay a day");
+    var row = element("div", "wl-row");
+    var day = document.createElement("input");
+    day.type = "date";
+    row.appendChild(day);
+    day.id = "water-level-control-replay-date";
+    ui.replayDay = day;
+    row.appendChild(day);
+    row.appendChild(button("Replay day", function () {
+      if (day.value) {
+        replayDay(day.value);
+      }
+    }));
+    replay.appendChild(row);
+    ui.replayInfo = element("div", "wl-note");
+    ui.replayInfo.id = "water-level-control-replay";
+    replay.appendChild(ui.replayInfo);
+    // Playback speed of the replay: simulated time per real second.
+    var speedTable = element("table");
+    var speedSelect = select("water-level-control-replay-speed", REPLAY_SPEEDS, String(waterSettings.replaySpeed), function (value) {
+      waterSettings.replaySpeed = Number(value);
+      saveSettings(WATER_KEY, waterSettings);
+      var t = findTerria();
+      if (replayDate && t && t.timelineClock) {
+        t.timelineClock.multiplier = waterSettings.replaySpeed;
+      }
+    });
+    settingRow(speedTable, "Speed", speedSelect);
+    replay.appendChild(speedTable);
+
+    // Buildings: a collapsible section of the Terrain & Buildings category.
     var layers = category(categories.terrain, "buildings", "Buildings", openCategories);
     var buildings = checkbox("water-level-control-buildings", "3D buildings", toggleBuildings);
     layerBoxes.buildings = buildings.box;
@@ -2645,9 +2676,9 @@
     layers.appendChild(legend);
 
     // Digital Twin date (date-selector.js: load a day's precipitation and water level): its box is
-    // moved into a collapsible section of the Data category instead of floating on its own.
+    // moved into a collapsible section of the Time category instead of floating on its own.
     // The node is moved as it is, so its controls and behaviour stay those of date-selector.js.
-    var dateSection = category(categories.data, "date", "Digital Twin date", openCategories);
+    var dateSection = category(categories.time, "date", "Digital Twin date", openCategories);
     (function adoptDateBox(tries) {
       var box = document.getElementById("dt-date-box");
       if (box) {

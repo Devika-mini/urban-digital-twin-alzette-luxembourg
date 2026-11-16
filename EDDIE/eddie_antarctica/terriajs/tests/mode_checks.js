@@ -27,6 +27,7 @@ function memoryStorage(initial) {
   return {
     getItem: function (key) { return Object.prototype.hasOwnProperty.call(values, key) ? values[key] : null; },
     setItem: function (key, value) { values[key] = String(value); },
+    removeItem: function (key) { delete values[key]; },
     values: values
   };
 }
@@ -144,6 +145,21 @@ function microtasks() {
   assert(/Monday.*2026/.test(casual.statusText({ replayDate: "2026-10-05", layers: {} })), "replay status");
   assert(/now/.test(casual.statusText({ mode: "LIVE", layers: {} })), "live status");
 
+  // --- Casual panel position: always fully on screen, kept between sessions, reset ----------------
+  equal(casual.clampPosition(100, 50, 400, 300, 1200, 800), { left: 100, top: 50 }, "inside the window: unchanged");
+  equal(casual.clampPosition(-80, -20, 400, 300, 1200, 800), { left: 0, top: 0 }, "past the top-left corner");
+  equal(casual.clampPosition(1000, 700, 400, 300, 1200, 800), { left: 800, top: 500 }, "past the bottom-right corner");
+  equal(casual.clampPosition(300, 200, 400, 300, 600, 400), { left: 200, top: 100 }, "re-clamped after a resize");
+  equal(casual.clampPosition(50, 50, 900, 300, 600, 800), { left: 0, top: 50 }, "wider than the window: left edge");
+  var positions = memoryStorage();
+  equal(casual.loadPosition(positions), null, "default place without a stored position");
+  casual.savePosition(positions, { left: 12, top: 34 });
+  equal(casual.loadPosition(positions), { left: 12, top: 34 }, "position kept");
+  casual.savePosition(positions, null);
+  equal(casual.loadPosition(positions), null, "reset forgets the position");
+  equal(casual.loadPosition(memoryStorage({ "casual-panel-position": "{bad" })), null, "invalid stored position ignored");
+  equal(casual.loadPosition({ getItem: function () { throw new Error("blocked"); } }), null, "blocked storage");
+
   // --- Shared state: Casual buttons act on the twin's own state (water-level-control.js) ----------
   win = load(fakeWindow(memoryStorage()), "water-level-control.js");
   load(win, "casual-ui.js");
@@ -192,8 +208,12 @@ function microtasks() {
   win.Event = function (type) { this.type = type; };
   load(win, "water-level-control.js");
   [
-    "water-level-control-category-layers", "water-level-control-layer-rain", "water-level-control-layer-zones-hq10",
+    "water-level-control-category-time", "water-level-control-category-rain", "water-level-control-category-river",
+    "water-level-control-category-terrain", "water-level-control-category-names", "water-level-control-category-floods",
+    "water-level-control-category-zones", "water-level-control-category-rain-period", "water-level-control-show-flood",
+    "water-level-control-layer-rain", "water-level-control-layer-zones-hq10",
     "water-level-control-layer-zones-hq100", "water-level-control-layer-zones-hqextreme", "water-level-control-layer-fees",
+    "water-level-control-hq10", "water-level-control-hq100", "water-level-control-hqextreme",
     "water-level-control-water-surface", "water-level-control-water-rippleSize", "water-level-control-water-period",
     "water-level-control-water-amplitude", "water-level-control-water-fps", "water-level-control-poll",
     "water-level-control-replay-speed", "water-level-control-rain-start", "water-level-control-rain-end",
@@ -201,6 +221,56 @@ function microtasks() {
     "water-level-control-fees-volume", "water-level-control-fees-percentage", "water-level-control-fees-price",
     "water-level-control-damage", "water-level-control-replay-date"
   ].forEach(function (id) { assert(doc.byId(id), "In-depth control built: " + id); });
+  assert(!doc.byId("water-level-control-category-layers"), "no Map layers category any more");
+
+  // Each control lives in one place only: the category (or panel) it belongs to.
+  function bodyOf(categoryKey) {
+    var head = doc.byId("water-level-control-category-" + categoryKey);
+    return head.parentNode.children[1];
+  }
+  function within(id, container) {
+    for (var node = doc.byId(id); node; node = node.parentNode) {
+      if (node === container) {
+        return true;
+      }
+    }
+    return false;
+  }
+  [
+    ["water-level-control-layer-rain", "rain"], ["water-level-control-rain-start", "rain-period"],
+    ["water-level-control-rain-end", "rain-period"], ["water-level-control-category-rain-period", "rain"],
+    ["water-level-control-water-surface", "river"], ["water-level-control-show-river", "river"],
+    ["water-level-control-show-fees", "river"], ["water-level-control-layer-fees", "river"],
+    ["water-level-control-show-replay", "time"], ["water-level-control-show-live", "time"],
+    ["water-level-control-show-sun", "time"], ["water-level-control-sun-toggle", "time"],
+    ["water-level-control-show-terrain", "terrain"], ["water-level-control-rem", "terrain"],
+    ["water-level-control-buildings", "terrain"], ["water-level-control-names-streets", "names"],
+    ["water-level-control-hq10", "floods"], ["water-level-control-hq100", "floods"], ["water-level-control-hqextreme", "floods"],
+    ["water-level-control-damage", "floods"], ["water-level-control-report", "floods"],
+    ["water-level-control-layer-zones-hq10", "zones"], ["water-level-control-layer-zones-hq100", "zones"],
+    ["water-level-control-layer-zones-hqextreme", "zones"]
+  ].forEach(function (entry) {
+    assert(within(entry[0], bodyOf(entry[1])), entry[0] + " in the " + entry[1] + " category");
+  });
+  var floodPanel = doc.byId("water-level-control-flood");
+  assert(within("water-level-control-category-floods", floodPanel), "Floods collapsible in the Flood panel");
+  assert(within("water-level-control-category-zones", floodPanel), "Zones collapsible in the Flood panel");
+  equal(floodPanel.children[1].children.length, 2, "the Flood panel holds exactly two collapsibles");
+  assert(!doc.byId("water-level-control-show-flood").parentNode.className.match(/wl-category/), "Flood opened by its own button");
+
+  // The Flood button opens and closes the Flood panel without touching what it shows.
+  var floodButton = doc.byId("water-level-control-show-flood");
+  equal(floodPanel.style.display, "none", "Flood panel closed at first");
+  equal(floodButton.getAttribute("aria-pressed"), "false", "Flood button not pressed");
+  doc.byId("water-level-control-layer-zones-hq10").checked = true;
+  floodButton.dispatchEvent({ type: "click" });
+  equal(floodPanel.style.display, "", "Flood panel opened");
+  equal(floodButton.getAttribute("aria-pressed"), "true", "Flood button pressed");
+  floodButton.dispatchEvent({ type: "click" });
+  equal(floodPanel.style.display, "none", "Flood panel closed again");
+  equal(doc.byId("water-level-control-layer-zones-hq10").checked, true, "closing the panel keeps the flood state");
+  doc.byId("water-level-control-layer-zones-hq10").checked = false;
+
   var readyEvents = win.events.filter(function (event) { return event.type === "alzette-twin-ready"; });
   equal(readyEvents.length, 1, "the panels finished building");
   // A Casual change ticks the In-depth box.
