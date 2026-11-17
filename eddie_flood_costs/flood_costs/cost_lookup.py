@@ -14,8 +14,11 @@ import math
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = "1.0.0"
-SCENARIOS = ("hq10", "hq100")
+from . import SCENARIOS
+
+SCHEMA_VERSION = "2.0.0"
+LEGACY_SCHEMA_VERSION = "1.0.0"
+LEGACY_SCENARIOS = ("hq10", "hq100")
 CATEGORIES = ("Residential", "Commercial", "Industrial")
 SOURCE_FILES = (
     "building_flood_damage.csv", "building_flood_damage.geojson",
@@ -24,9 +27,10 @@ SOURCE_FILES = (
 RECONCILIATION_TOLERANCE_EUR = 1e-6
 CLASSIFIED = "classified_subset"
 UNRESOLVED = "unresolved_in_corridor"
+PENDING = "pending_classification_review"
 EXCLUDED = "excluded_outside_landuse_corridor"
 KNOWN_STATUSES = {"calculated_positive", "calculated_zero"}
-UNKNOWN_STATUSES = {"unknown_classification", "excluded_outside_corridor", "unknown_depth_coverage"}
+UNKNOWN_STATUSES = {"unknown_classification", "excluded_outside_corridor", "unknown_depth_coverage", "not_assessed"}
 
 
 class LookupValidationError(ValueError):
@@ -34,12 +38,12 @@ class LookupValidationError(ValueError):
 
 
 class InvalidScenario(ValueError):
-    """Only precomputed HQ10 and HQ100 estimates are supported."""
+    """Precomputed HQ10, HQ100 and HQextreme estimates are supported (schema v2)."""
 
 
 def normalize_scenario(scenario: str) -> str:
     if not isinstance(scenario, str) or scenario.strip().lower() not in SCENARIOS:
-        raise InvalidScenario("Use hq10 or hq100; manual levels and HQ Extreme are not supported.")
+        raise InvalidScenario("Use hq10, hq100 or hqextreme; manual levels are not supported.")
     return scenario.strip().lower()
 
 
@@ -122,7 +126,8 @@ def _boolean(value: str | bool) -> bool:
     raise LookupValidationError("Classification acceptance must be True or False.")
 
 
-def _record(row: dict) -> dict:
+def _record(row: dict, scenarios=None) -> dict:
+    scenarios = scenarios or (SCENARIOS if "damage_hqextreme_eur2010" in row else LEGACY_SCENARIOS)
     required = ("jrc_category", "accepted_provisional_classification", "classification_scope",
                 "classification_confidence", "classification_source", "classification_basis",
                 "classification_review_decision")
@@ -139,7 +144,7 @@ def _record(row: dict) -> dict:
         "classification_basis": row["classification_basis"] or None,
         "classification_review_decision": row["classification_review_decision"] or None,
     }
-    for scenario in SCENARIOS:
+    for scenario in scenarios:
         prefix = f"damage_{scenario}_"
         _require(all(prefix + suffix in row for suffix in ("eur2010", "status", "quality_flags")),
                  "Missing scenario fields in source results.")
@@ -163,15 +168,16 @@ def _group_summary(records: list[dict], scenario: str) -> dict:
         "zero_damage_buildings": sum(a == 0 for a in amounts),
         "unknown_damage_buildings": len(records) - len(amounts),
         "classified_unknown_damage_buildings": len(accepted) - len(known),
-        "total_eur2010": math.fsum(known) if known or not accepted else None,
+        "total_eur2010": math.fsum(known) if known or not records else None,
         "complete_for_classified_subset": len(known) == len(accepted),
     }
 
 
-def _totals(buildings: dict) -> dict:
+def _totals(buildings: dict, scenarios=None) -> dict:
+    scenarios = scenarios or (SCENARIOS if buildings and "hqextreme" in next(iter(buildings.values())) else LEGACY_SCENARIOS)
     records = list(buildings.values())
     result = {}
-    for scenario in SCENARIOS:
+    for scenario in scenarios:
         summary = _group_summary(records, scenario)
         summary.update({
             "unresolved_classifications": sum(r["classification_scope"] == UNRESOLVED for r in records),
@@ -179,19 +185,21 @@ def _totals(buildings: dict) -> dict:
             "by_category": {category: _group_summary([r for r in records if r["jrc_category"] == category], scenario)
                             for category in CATEGORIES},
         })
+        if "hqextreme" in scenarios:
+            summary["pending_classification_review"] = sum(r["classification_scope"] == PENDING for r in records)
         result[scenario] = summary
     return result
 
 
-def _validate_record(bid: str, record: Any) -> None:
+def _validate_record(bid: str, record: Any, scenarios=SCENARIOS) -> None:
     _require(isinstance(record, dict), f"Building record must be an object: {bid}")
     required = {"jrc_category", "accepted_provisional_classification", "classification_scope",
                 "classification_confidence", "classification_source", "classification_basis",
-                "classification_review_decision", *SCENARIOS}
+                "classification_review_decision", *scenarios}
     _require(set(record) == required, f"Unexpected/missing building fields: {bid}")
     accepted = record["accepted_provisional_classification"]
     _require(isinstance(accepted, bool), f"Invalid acceptance flag: {bid}")
-    _require(record["classification_scope"] in (CLASSIFIED, UNRESOLVED, EXCLUDED), f"Invalid scope: {bid}")
+    _require(record["classification_scope"] in ((CLASSIFIED, UNRESOLVED, EXCLUDED, PENDING) if "hqextreme" in scenarios else (CLASSIFIED, UNRESOLVED, EXCLUDED)), f"Invalid scope: {bid}")
     _require((accepted and record["jrc_category"] in CATEGORIES and record["classification_scope"] == CLASSIFIED)
              or (not accepted and record["jrc_category"] is None and record["classification_scope"] != CLASSIFIED),
              f"Category, scope and acceptance disagree: {bid}")
@@ -200,7 +208,7 @@ def _validate_record(bid: str, record: Any) -> None:
              f"Missing classification source: {bid}")
     for key in ("classification_basis", "classification_review_decision"):
         _require(record[key] is None or isinstance(record[key], str), f"Invalid classification metadata: {bid}")
-    for scenario in SCENARIOS:
+    for scenario in scenarios:
         cost = record[scenario]
         _require(isinstance(cost, dict) and set(cost) == {"damage_eur2010", "status", "quality_flags"},
                  f"Invalid scenario schema: {bid}/{scenario}")
@@ -211,15 +219,19 @@ def _validate_record(bid: str, record: Any) -> None:
         _require(isinstance(cost["quality_flags"], list)
                  and all(isinstance(flag, str) and flag for flag in cost["quality_flags"]), f"Invalid flags: {bid}")
         status = cost["status"]
-        _require(isinstance(status, str) and status in KNOWN_STATUSES | UNKNOWN_STATUSES, f"Invalid cost status: {bid}")
+        _require(isinstance(status, str) and status in KNOWN_STATUSES | (UNKNOWN_STATUSES if "hqextreme" in scenarios else UNKNOWN_STATUSES - {"not_assessed"}), f"Invalid cost status: {bid}")
         if status in KNOWN_STATUSES:
             _require(accepted and amount is not None, f"Known money requires accepted classification: {bid}")
             _require((status == "calculated_zero" and amount == 0)
                      or (status == "calculated_positive" and amount > 0), f"Status/amount mismatch: {bid}")
         else:
             _require(amount is None, f"Unknown damage must be null, never zero: {bid}")
-            expected = "unknown_depth_coverage" if accepted else "unknown_classification" if record["classification_scope"] == UNRESOLVED else "excluded_outside_corridor"
-            _require(status == expected, f"Scope/status mismatch: {bid}")
+            expected = {"unknown_depth_coverage", "not_assessed"} if accepted else {"unknown_classification"} if record["classification_scope"] in (UNRESOLVED, PENDING) else {"excluded_outside_corridor"}
+            _require(status in expected, f"Scope/status mismatch: {bid}")
+            if status == "not_assessed":
+                _require(scenario in ("hq10", "hq100") and record["classification_review_decision"] == "approved_user_provisional"
+                         and "legacy_scenario_unassessed_amount_preserved_null" in cost["quality_flags"],
+                         f"Unassessed scenario lacks explicit approval scope: {bid}/{scenario}")
 
 
 def _validate_summary(stored: Any, expected: dict, label: str) -> None:
@@ -241,7 +253,8 @@ class CostLookup:
 
     def __init__(self, document: dict):
         _require(isinstance(document, dict), "Lookup must be an object.")
-        _require(document.get("schema_version") == SCHEMA_VERSION, "Unsupported lookup schema version.")
+        _require(document.get("schema_version") in (LEGACY_SCHEMA_VERSION, SCHEMA_VERSION), "Unsupported lookup schema version.")
+        self.scenarios = SCENARIOS if document["schema_version"] == SCHEMA_VERSION else LEGACY_SCENARIOS
         _require(isinstance(document.get("dataset_version"), str) and bool(document["dataset_version"]), "Missing dataset version.")
         metadata = document.get("metadata", {})
         _require(isinstance(metadata, dict) and metadata.get("currency") == "EUR"
@@ -251,8 +264,8 @@ class CostLookup:
         _require(isinstance(buildings, dict) and bool(buildings), "Lookup requires buildings keyed by original ID.")
         for bid, record in buildings.items():
             _require(isinstance(bid, str) and bool(bid.strip()) and bid == bid.strip(), "Invalid building ID.")
-            _validate_record(bid, record)
-        _validate_summary(document.get("summaries"), _totals(buildings), "summaries")
+            _validate_record(bid, record, self.scenarios)
+        _validate_summary(document.get("summaries"), _totals(buildings, self.scenarios), "summaries")
         self._document = copy.deepcopy(document)
 
     @classmethod
@@ -263,12 +276,18 @@ class CostLookup:
         return copy.deepcopy(self._document)
 
     def _metadata(self) -> dict:
-        return {"schema_version": SCHEMA_VERSION, "dataset_version": self._document["dataset_version"],
+        return {"schema_version": self._document["schema_version"], "dataset_version": self._document["dataset_version"],
                 "currency": "EUR", "price_year": 2010, "provisional": True,
                 "scope": "classified_subset; not complete AOI flood losses"}
 
-    def building_cost(self, buildingid: str, scenario: str) -> dict:
+    def _scenario(self, scenario):
         scenario = normalize_scenario(scenario)
+        if scenario not in self.scenarios:
+            raise InvalidScenario("Scenario is unavailable in this dataset; use " + ", ".join(self.scenarios) + ".")
+        return scenario
+
+    def building_cost(self, buildingid: str, scenario: str) -> dict:
+        scenario = self._scenario(scenario)
         _require(isinstance(buildingid, str) and bool(buildingid.strip()), "A building ID is required.")
         record = self._document["buildings"].get(buildingid)
         result = {**self._metadata(), "buildingid": buildingid, "scenario": scenario, "found": record is not None}
@@ -288,7 +307,7 @@ class CostLookup:
         return self.building_cost(buildingid, scenario)["damage_eur2010"]
 
     def summary(self, scenario: str) -> dict:
-        scenario = normalize_scenario(scenario)
+        scenario = self._scenario(scenario)
         return {**self._metadata(), "scenario": scenario, **copy.deepcopy(self._document["summaries"][scenario])}
 
 
@@ -303,11 +322,12 @@ def build_lookup(source_dir: str | Path) -> dict:
     _require(all(isinstance(f, dict) and isinstance(f.get("properties"), dict) for f in geo["features"]), "Missing GeoJSON properties.")
     geo_rows = _index([feature["properties"] for feature in geo["features"]], "building damage GeoJSON")
     _require(set(rows) == set(geo_rows), "CSV/GeoJSON building ID sets disagree.")
+    scenarios = SCENARIOS if rows and "damage_hqextreme_eur2010" in next(iter(rows.values())) else LEGACY_SCENARIOS
     buildings = {}
     for bid, row in rows.items():
-        record = _record(row)
-        counterpart = _record(geo_rows[bid])
-        _validate_record(bid, record)
+        record = _record(row, scenarios)
+        counterpart = _record(geo_rows[bid], scenarios)
+        _validate_record(bid, record, scenarios)
         for key in record:
             if key in SCENARIOS:
                 _require(_same_amount(record[key]["damage_eur2010"], counterpart[key]["damage_eur2010"])
@@ -317,7 +337,7 @@ def build_lookup(source_dir: str | Path) -> dict:
             else:
                 _require(record[key] == counterpart[key], f"CSV/GeoJSON classification mismatch: {bid}/{key}")
         buildings[bid] = record
-    totals = _totals(buildings)
+    totals = _totals(buildings, scenarios)
     validation = _read_json(paths["damage_validation.json"])
     counts = validation.get("counts", {})
     _require(isinstance(counts, dict), "Invalid validation-report counts.")
@@ -327,9 +347,12 @@ def build_lookup(source_dir: str | Path) -> dict:
         "accepted_provisional_classifications": sum(r["accepted_provisional_classification"] for r in records),
         "unresolved_in_corridor": sum(r["classification_scope"] == UNRESOLVED for r in records),
         "outside_corridor_excluded": sum(r["classification_scope"] == EXCLUDED for r in records),
+            "pending_classification_review": sum(r["classification_scope"] == PENDING for r in records),
         "accepted_category_counts": {c: sum(r["jrc_category"] == c for r in records) for c in CATEGORIES
                                      if any(r["jrc_category"] == c for r in records)},
     }
+    if "hqextreme" not in scenarios:
+        expected_counts.pop("pending_classification_review")
     for key, value in expected_counts.items():
         _require(counts.get(key) == value, f"Validation report count mismatch: {key}")
     _require(validation.get("currency") == "EUR" and validation.get("price_year") == 2010, "Source valuation units disagree.")
@@ -340,12 +363,15 @@ def build_lookup(source_dir: str | Path) -> dict:
         pair = (normalize_scenario(row["scenario"]), row["group"])
         _require(pair not in saved, f"Duplicate saved summary: {pair}")
         saved[pair] = row
-    for scenario in SCENARIOS:
+    for scenario in scenarios:
         groups = {"Classified total": [r for r in records if r["accepted_provisional_classification"]],
                   **{c: [r for r in records if r["jrc_category"] == c] for c in CATEGORIES},
                   "Unresolved in corridor": [r for r in records if r["classification_scope"] == UNRESOLVED],
                   "Excluded outside corridor": [r for r in records if r["classification_scope"] == EXCLUDED],
+                  "Pending classification review": [r for r in records if r["classification_scope"] == PENDING],
                   "All buildings": records}
+        if "hqextreme" not in scenarios:
+            groups.pop("Pending classification review")
         for name, group in groups.items():
             _require((scenario, name) in saved, f"Missing saved summary: {scenario}/{name}")
             row = saved[(scenario, name)]
@@ -359,9 +385,9 @@ def build_lookup(source_dir: str | Path) -> dict:
             _require(_same_amount(_amount(row["known_estimates_sum_eur2010"]), expected),
                      f"Saved summary total mismatch: {scenario}/{name}")
     document = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": SCHEMA_VERSION if "hqextreme" in scenarios else LEGACY_SCHEMA_VERSION,
         "dataset_version": "sha256:" + hashes["building_flood_damage.csv"],
-        "metadata": {"currency": "EUR", "price_year": 2010, "provisional": True,
+        "metadata": {**({"scenarios": list(scenarios)} if "hqextreme" in scenarios else {}), "currency": "EUR", "price_year": 2010, "provisional": True,
                      "vertical_datum_verified": False, "scope": "classified_subset; not complete AOI flood losses",
                      "source_calculated_utc": validation.get("created_utc"),
                      "source_sha256": hashes,
@@ -398,7 +424,7 @@ def main() -> None:
     path = write_lookup(args.source_dir, args.output)
     lookup = CostLookup.load(path)
     print(json.dumps({"output": str(path), "bytes": path.stat().st_size,
-                      "summaries": {s: lookup.summary(s) for s in SCENARIOS}}, indent=2))
+                      "summaries": {s: lookup.summary(s) for s in lookup.scenarios}}, indent=2))
 
 
 if __name__ == "__main__":

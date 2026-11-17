@@ -33,10 +33,9 @@ from shapely.geometry import LineString, MultiPoint, mapping, shape
 from shapely.ops import unary_union, voronoi_diagram
 from shapely.prepared import prep
 
-from . import WorkflowPaths, gdal_library_path
+from . import WorkflowPaths, gdal_library_path, SCENARIOS, LEGACY_SCENARIOS, SCENARIO_PAIRS
 
 COMMIT = "769cfc4ed85f7f56caca951807de4e2d0d9dc863"
-SCENARIOS = ("hq10", "hq100")
 STEP = 1.0
 TOLERANCE = 1e-6
 
@@ -44,7 +43,10 @@ TOLERANCE = 1e-6
 def configure(paths=None):
     """Resolve external paths when invoked; importing this module opens no data."""
     global ROOT, OUT, DEM_PATH, BUILDINGS_PATH, MARKERS_PATH, HAZARD_PATHS, PRODUCTS
+    global baseline_path, verify_baseline, baseline_provenance, portable_path
     paths = paths or WorkflowPaths()
+    baseline_path, verify_baseline = paths.baseline_path, paths.verify_baseline
+    baseline_provenance, portable_path = paths.baseline_provenance, paths.portable_path
     ROOT = paths.project_root
     OUT = paths.stage_path('depth')
     DEM_PATH = paths.input_path('dem')
@@ -489,7 +491,7 @@ def load_reference_functions():
               DEFAULT_CORRIDOR_M=300.0, SCENARIO_REACH_M=1000.0,
               SCENARIO_SAMPLE_STEP_M=5.0, SCENARIO_SMOOTHING_CELLS=5,
               BUILDINGS_CORRIDOR_M=500.0, TERRAIN_DEM=DEM_PATH,
-              SCENARIOS={"hq10":"HWGK2021_HQ10", "hq100":"HWGK2021_HQ100"},
+              SCENARIOS={"hq10":"HWGK2021_HQ10", "hq100":"HWGK2021_HQ100", "hqextreme":"HWGK2021_HQext"},
               FLOOD_NONE=0, FLOOD_TOUCHED=1, FLOOD_FULL=2, **constants)
     ns["_GAUGE_KMS"] = np.array([constants[k] for k in ("PFAFFENTHAL_KM", "HESPERANGE_KM", "LIVANGE_KM")])
     ns["_GAUGE_ZEROS"] = np.array([constants[k] for k in ("PFAFFENTHAL_GAUGE_ZERO_M", "HESPERANGE_GAUGE_ZERO_M", "LIVANGE_GAUGE_ZERO_M")])
@@ -630,14 +632,26 @@ def main(inputs=None):
     paths.guard_output(OUT)
     if any(p.exists() for p in PRODUCTS):
         raise RuntimeError("An output product already exists; refusing to overwrite")
+    baseline_features, baseline_samples, baseline_report = {}, {}, None
+    if paths.baseline_root:
+        verify_baseline()
+        baseline_geo = json.loads((baseline_path('depth')/'building_reconstructed_depths.geojson').read_text())
+        baseline_features = {f['properties']['buildingid']: f for f in baseline_geo['features']}
+        baseline_report = json.loads((baseline_path('depth')/'validation_report.json').read_text())
+        baseline_samples = {}
+        with gzip.open(baseline_path('depth')/'building_depth_samples.csv.gz', 'rt', newline='') as handle:
+            for row in csv.DictReader(handle):
+                baseline_samples.setdefault((row['buildingid'], row['scenario']), []).append(row)
     OUT.mkdir(parents=True,exist_ok=True)
     warnings.filterwarnings("ignore", message="Measured.*")
     ns, reference_hashes = load_reference_functions()
     inputs.bind(ns)
     markers = inputs.markers(ns["KILOMETRAGE_LAYER"])
-    extents = {s:inputs.extent(s, markers) for s in SCENARIOS}
+    extents = {s: inputs.extent(s, markers) for s in SCENARIOS}
     ns["flood_extent"] = lambda scenario: extents[scenario]
-    study = ns["study_area"]()
+    original_study = ns["study_area"]()
+    # Same corridor construction and km35-50 markers, widened for the third extent.
+    study = unary_union([original_study, unary_union(ns['water_cells'](500.0, 'hqextreme').to_crs(2169).geometry)])
     cells = {s:ns["water_cells"](300.0, s).to_crs(2169) for s in SCENARIOS}
     emit("study_constructed", area_km2=study.area/1e6, bounds=study.bounds)
     buildings = inputs.buildings(study)
@@ -655,7 +669,11 @@ def main(inputs=None):
     buildings = buildings.sort_values("buildingid").reset_index(drop=True)
     for s in SCENARIOS:
         buildings[f"exposure_{s}_code"] = ns["_extent_status"](buildings.geometry, extents[s])
-    selected = buildings[buildings[[f"exposure_{s}_code" for s in SCENARIOS]].gt(0).any(axis=1)].copy().reset_index(drop=True)
+    selected = buildings[buildings[[f"exposure_{s}_code" for s in SCENARIOS]].gt(0).any(axis=1)
+                         | buildings.buildingid.isin(baseline_features)].copy().reset_index(drop=True)
+    assert set(baseline_features) <= set(selected.buildingid), 'Original comparison cohort is missing'
+    for _, building in selected[selected.buildingid.isin(baseline_features)].iterrows():
+        assert abs(building.geometry.area-baseline_features[building.buildingid]['properties']['footprint_area_m2']) < 1e-7
     geom_bounds = np.array([study.bounds, *[c.total_bounds for c in cells.values()], selected.total_bounds])
     bounds = [geom_bounds[:,0].min()-5, geom_bounds[:,1].min()-5,
               geom_bounds[:,2].max()+5, geom_bounds[:,3].max()+5]
@@ -665,7 +683,10 @@ def main(inputs=None):
             raise RuntimeError("Unexpected raster request")
         return dem
     ns["rasterio"] = SimpleNamespace(open=open_dem)
-    profiles = {s:ns["scenario_wse"](s) for s in SCENARIOS}
+    profiles = {s: ({int(row['chainage_m']): row['scenario_wse_m']
+                     for row in baseline_report['scenarios'][s]['profile']}
+                    if baseline_report and s in LEGACY_SCENARIOS else ns['scenario_wse'](s))
+                for s in SCENARIOS}
     chainages = sorted(set(profiles["hq10"]) & set(profiles["hq100"]))
     profile_bad = [c for c in chainages if profiles["hq100"][c]+TOLERANCE < profiles["hq10"][c]]
     emit("profiles_reconstructed", screened_buildings=len(buildings), output_buildings=len(selected),
@@ -677,6 +698,7 @@ def main(inputs=None):
                      "reconstruction_valid","raw_terrain_depth_m","official_masked_depth_m","wet"]
     sample_totals = {s:Counter() for s in SCENARIOS}
     comparison = Counter()
+    pair_comparisons = {f"{high}_vs_{low}": Counter() for low, high in SCENARIO_PAIRS}
     sample_positive = {s:[] for s in SCENARIOS}
     with gzip.open(PRODUCTS[2], "wt", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=sample_fields)
@@ -692,6 +714,14 @@ def main(inputs=None):
                 part_indices.append(np.full(len(p), part_index, dtype=int))
             xy, part_ids = np.concatenate(pts), np.concatenate(part_indices)
             ground = dem.values(xy)
+            bid = str(building.buildingid)
+            if bid in baseline_features:
+                saved_points = baseline_samples[(bid, LEGACY_SCENARIOS[0])]
+                saved_xy = np.array([[float(row['x_epsg2169']), float(row['y_epsg2169'])] for row in saved_points])
+                assert xy.shape == saved_xy.shape and np.allclose(xy, saved_xy, rtol=0, atol=1e-8)
+                xy = saved_xy
+                part_ids = np.array([int(row['part_index']) for row in saved_points])
+                ground = np.array([float(row['ground_elevation_m']) if row['ground_elevation_m'] else np.nan for row in saved_points])
             record = {"buildingid":str(building.buildingid), "gml_id":str(building.gml_id),
                       "commune":str(building.commune), "lau2":str(building.lau2),
                       "footprint_area_m2":float(building.geometry.area),
@@ -701,25 +731,40 @@ def main(inputs=None):
                       "depths_provisional":True, "vertical_datum_verified":False,
                       "sample_spacing_m":STEP, "dem_resolution_m":5.0,
                       "depth_method":"Luiz scenario WSE minus DEM; official-extent masked; positive-only summaries"}
+            if bid in baseline_features:
+                record.update(baseline_features[bid]['properties'])
+            record['comparison_cohort'] = bid in baseline_features
+            record['classification_review_required'] = bid not in baseline_features
             per_scenario = {}
             for s in SCENARIOS:
-                code = int(building[f"exposure_{s}_code"])
-                record[f"exposure_{s}_code"] = code
-                record[f"exposure_{s}_status"] = {0:"none",1:"touched_or_partial",2:"fully_contained"}[code]
-                overlap = building.geometry.intersection(extents[s]).area
-                record[f"official_overlap_{s}_area_m2"] = float(overlap)
-                record[f"official_overlap_{s}_fraction"] = float(overlap/building.geometry.area)
-                assigned, kinds = assign_cells(xy, cells[s])
-                wse = np.array([profiles[s].get(int(c),np.nan) if c>=0 else np.nan for c in assigned])
-                valid = np.isfinite(ground) & np.isfinite(wse) & (assigned>=0)
-                inside = shapely.contains_xy(extents[s], xy[:,0], xy[:,1])
-                raw = np.full(len(xy),np.nan)
-                raw[valid] = np.maximum(0,wse[valid]-ground[valid])
-                depth = np.full(len(xy),np.nan)
-                depth[valid] = np.where(inside[valid],raw[valid],0.0)
-                summary = summarize_depth(depth,valid,inside,assigned,kinds,ground)
-                for key,value in summary.items():
-                    record[(f"depth_{s}_{key}" if key in {"min_m","mean_m","max_m","all_valid_mean_m"} else f"{key}_{s}")] = value
+                preserved = baseline_samples.get((bid, s))
+                if preserved is not None:
+                    code = record[f'exposure_{s}_code']
+                    assigned = np.array([int(row['chainage_m']) if row['chainage_m'] else -1 for row in preserved])
+                    kinds = np.array([row['water_cell_assignment'] for row in preserved])
+                    wse = np.array([float(row['scenario_wse_m']) if row['scenario_wse_m'] else np.nan for row in preserved])
+                    valid = np.array([row['reconstruction_valid'] == 'True' for row in preserved])
+                    inside = np.array([row['official_extent_contains_sample'] == 'True' for row in preserved])
+                    raw = np.array([float(row['raw_terrain_depth_m']) if row['raw_terrain_depth_m'] else np.nan for row in preserved])
+                    depth = np.array([float(row['official_masked_depth_m']) if row['official_masked_depth_m'] else np.nan for row in preserved])
+                else:
+                    code = int(building[f"exposure_{s}_code"])
+                    record[f"exposure_{s}_code"] = code
+                    record[f"exposure_{s}_status"] = {0:"none",1:"touched_or_partial",2:"fully_contained"}[code]
+                    overlap = building.geometry.intersection(extents[s]).area
+                    record[f"official_overlap_{s}_area_m2"] = float(overlap)
+                    record[f"official_overlap_{s}_fraction"] = float(overlap/building.geometry.area)
+                    assigned, kinds = assign_cells(xy, cells[s])
+                    wse = np.array([profiles[s].get(int(c),np.nan) if c>=0 else np.nan for c in assigned])
+                    valid = np.isfinite(ground) & np.isfinite(wse) & (assigned>=0)
+                    inside = shapely.contains_xy(extents[s], xy[:,0], xy[:,1])
+                    raw = np.full(len(xy),np.nan)
+                    raw[valid] = np.maximum(0,wse[valid]-ground[valid])
+                    depth = np.full(len(xy),np.nan)
+                    depth[valid] = np.where(inside[valid],raw[valid],0.0)
+                    summary = summarize_depth(depth,valid,inside,assigned,kinds,ground)
+                    for key,value in summary.items():
+                        record[(f"depth_{s}_{key}" if key in {"min_m","mean_m","max_m","all_valid_mean_m"} else f"{key}_{s}")] = value
                 if not code and np.any(valid & (depth>0)):
                     raise RuntimeError("A non-exposed building was marked wet")
                 wet = valid & (depth>0)
@@ -731,6 +776,9 @@ def main(inputs=None):
                 sample_totals[s].update({f"assignment_{k}":int(v) for k,v in Counter(kinds).items()})
                 sample_positive[s].extend(depth[wet].tolist())
                 per_scenario[s] = (depth, valid, wse, assigned)
+                if preserved is not None:
+                    writer.writerows(preserved)
+                    continue
                 for j in range(len(xy)):
                     writer.writerow(clean({"buildingid":record["buildingid"],"part_index":int(part_ids[j]),
                         "sample_index":j,"x_epsg2169":float(xy[j,0]),"y_epsg2169":float(xy[j,1]),
@@ -739,23 +787,21 @@ def main(inputs=None):
                         "scenario_wse_m":wse[j],"reconstruction_valid":bool(valid[j]),
                         "raw_terrain_depth_m":raw[j],"official_masked_depth_m":depth[j],
                         "wet":bool(wet[j]) if valid[j] else None}))
-            d10,v10,w10,c10 = per_scenario["hq10"]
-            d100,v100,w100,c100 = per_scenario["hq100"]
-            common = v10 & v100
-            bad_depth = common & (d100+TOLERANCE<d10)
-            bad_wse = common & (w100+TOLERANCE<w10)
-            record["hq100_depth_below_hq10_sample_count"] = int(bad_depth.sum())
-            record["hq100_wse_below_hq10_sample_count"] = int(bad_wse.sum())
-            record["scenario_changed_chainage_sample_count"] = int((common & (c10!=c100)).sum())
-            for statistic in ("min_m","mean_m","max_m"):
-                a,b = record[f"depth_hq10_{statistic}"],record[f"depth_hq100_{statistic}"]
-                record[f"hq100_positive_{statistic}_below_hq10"] = bool(b+TOLERANCE<a) if a is not None and b is not None else None
-            comparison.update(sample_depth_decreases=int(bad_depth.sum()),sample_wse_decreases=int(bad_wse.sum()),
-                buildings_with_sample_depth_decrease=int(bad_depth.any()),
-                buildings_with_sample_wse_decrease=int(bad_wse.any()),
-                buildings_with_max_depth_decrease=int(record["hq100_positive_max_m_below_hq10"] is True),
-                buildings_with_positive_mean_decrease=int(record["hq100_positive_mean_m_below_hq10"] is True),
-                buildings_with_positive_min_decrease=int(record["hq100_positive_min_m_below_hq10"] is True))
+            for low, high in SCENARIO_PAIRS:
+                dlo, vlo, wlo, clo = per_scenario[low]
+                dhi, vhi, whi, chi = per_scenario[high]
+                common = vlo & vhi
+                bad_depth = common & (dhi+TOLERANCE<dlo)
+                bad_wse = common & (whi+TOLERANCE<wlo)
+                prefix = f'{high}_vs_{low}'
+                record[f'{high}_depth_below_{low}_sample_count'] = int(bad_depth.sum())
+                record[f'{high}_wse_below_{low}_sample_count'] = int(bad_wse.sum())
+                record[f'{prefix}_changed_chainage_sample_count'] = int((common & (chi!=clo)).sum())
+                for statistic in ('min_m','mean_m','max_m'):
+                    a,b = record[f'depth_{low}_{statistic}'],record[f'depth_{high}_{statistic}']
+                    record[f'{high}_positive_{statistic}_below_{low}'] = bool(b+TOLERANCE<a) if a is not None and b is not None else None
+                pair_comparisons[prefix].update(sample_depth_decreases=int(bad_depth.sum()), sample_wse_decreases=int(bad_wse.sum()),
+                    buildings_with_sample_depth_decrease=int(bad_depth.any()), buildings_with_sample_wse_decrease=int(bad_wse.any()))
             records.append(clean(record))
             if (index+1)%50==0:
                 emit("buildings_sampled",completed=index+1,total=len(selected))
@@ -763,7 +809,7 @@ def main(inputs=None):
     frame = pd.DataFrame(records)
     frame.to_csv(PRODUCTS[1],index=False,na_rep="")
     wgs = selected.to_crs(4326)
-    features = [{"type":"Feature","id":r["buildingid"],"geometry":mapping(g),"properties":r}
+    features = [{"type":"Feature","id":r["buildingid"],"geometry":baseline_features[r["buildingid"]]["geometry"] if r["buildingid"] in baseline_features else mapping(g),"properties":r}
                 for r,g in zip(records,wgs.geometry)]
     document = {"type":"FeatureCollection","name":"provisional_building_reconstructed_depths",
                 "features":features}
@@ -803,9 +849,15 @@ def main(inputs=None):
             "water_cells":len(cells[s]),"chainages":len(profiles[s]),
             "profile":[{"chainage_m":int(c),"scenario_wse_m":float(v)} for c,v in sorted(profiles[s].items())],
         }
+    for record in records:
+        if record['buildingid'] in baseline_features:
+            for key, value in baseline_features[record['buildingid']]['properties'].items():
+                assert record[key] == value, (record['buildingid'], key)
     outside100 = extents["hq10"].intersection(study).difference(extents["hq100"]).area
+    comparison = pair_comparisons['hq100_vs_hq10']
     report = {
         "status":"completed_provisional_no_monetary_damage","created_utc":datetime.now(timezone.utc).isoformat(),
+        "baseline_provenance":baseline_provenance(),
         "reference_commit":COMMIT,"reference_repository":"robin-szy/urban-digital-twin-alzette-luxembourg",
         "reference_source_sha256":reference_hashes,
         "unchanged_reference_functions":{
@@ -816,10 +868,10 @@ def main(inputs=None):
             "Retain one complete 2D footprint per buildingid; aggregate duplicate IDs only if present",
             "Scenario-specific sample-cell joins; strict within, unique-chainage boundary fallback; ambiguities null",
             "Mask reconstructed depths using strict interior of official scenario extent"],
-        "inputs":{str(DEM_PATH):{"bytes":DEM_PATH.stat().st_size,"mtime_ns":DEM_PATH.stat().st_mtime_ns},**inputs.provenance()},
+        "inputs":{**inputs.provenance(), str(DEM_PATH):{"bytes":DEM_PATH.stat().st_size,"mtime_ns":DEM_PATH.stat().st_mtime_ns}},
         "software":{"python":os.sys.version,"geopandas":gpd.__version__,
             "shapely":shapely.__version__,"pyproj":pyproj.__version__,"numpy":np.__version__},
-        "dem":dem.metadata,"study_area":{"definition":"Luiz study_area(): water_cells(500, hq100) union; no rectangular Hesperange substitute",
+        "dem":dem.metadata,"study_area":{"definition":"Union of original HQ100 and HQextreme water_cells(500, scenario), same km35-50 markers and tributary rules",
             "crs":"EPSG:2169","bounds":study.bounds,"area_m2":study.area,
             "building_bbox_rows_read":bbox_rows,"screened_unique_buildings":len(buildings),
             "duplicate_source_id_rows_dissolved":duplicate_rows,"output_affected_union_buildings":len(selected),
@@ -833,6 +885,13 @@ def main(inputs=None):
             "unknown_csv_encoding":"Empty field; GeoJSON/report use JSON null",
             "weighting_limitation":"Edge and interior samples follow Luiz; wet-sample fraction is not exact flooded-area fraction"},
         "scenarios":stats,
+        "comparison_cohort":{"baseline_buildings":len(baseline_features), "buildingids":sorted(baseline_features),
+            "additional_buildings":len(selected)-len(baseline_features), "legacy_depth_records_and_samples_reused":bool(baseline_features),
+            "baseline_depth_report":str(baseline_path('depth')/'validation_report.json') if baseline_features else None},
+        "scenario_pair_comparisons":dict(pair_comparisons),
+        "profile_order_checks":{f'{high}_vs_{low}': {
+            'decrease_chainages':[c for c in sorted(set(profiles[low]) & set(profiles[high])) if profiles[high][c]+TOLERANCE<profiles[low][c]]}
+            for low,high in SCENARIO_PAIRS},
         "consistency":{"tolerance_m":TOLERANCE,"common_profile_chainages":len(chainages),
             "hq100_wse_below_hq10_chainages":profile_bad,
             "minimum_profile_hq100_minus_hq10_m":min(profiles["hq100"][c]-profiles["hq10"][c] for c in chainages),
@@ -842,7 +901,7 @@ def main(inputs=None):
             "footprint_roundtrip_max_error_m":float(np.max(geometry_error)),
             "no_wet_samples_outside_official_extent":True,"no_nonexposed_buildings_marked_wet":True,
             "nonfinite_values_serialized_as_null":True,"national_dem_not_loaded":True,
-            "outputs":[{"path":str(p),"bytes":p.stat().st_size} for p in PRODUCTS[:3]]},
+            "outputs":[{"path":portable_path(p),"bytes":p.stat().st_size} for p in PRODUCTS[:3]]},
         "limitations":["PROVISIONAL: DEM vertical datum and elevation units are not confirmed by metadata; metre elevations assumed",
             "No DEM provenance sidecar supplied; filling history and agreement with official-map model terrain unknown",
             "No CZML display offset used; no building roof Z or zmin used as ground",
@@ -850,7 +909,7 @@ def main(inputs=None):
             "Scenario WSE reconstructed from extent-edge terrain, smoothing and monotonicity; not calibrated official depth grids",
             "No finished-floor levels, hydraulic connectivity, defence behaviour or damage calculation",
             "Missing/unassigned samples excluded from depth statistics and explicitly counted; incomplete means may be biased",
-            "Only buildings intersecting either official HQ extent are exported; all study-area buildings are screened",
+            "Buildings exposed to any supported scenario plus the original comparison cohort are exported; all expanded study-area buildings are screened",
             "Retained full building footprints can extend slightly beyond the selecting study-area boundary",
             "Building positive-depth mean/min and wet fraction depend on sampling and official masks"],
     }

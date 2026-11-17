@@ -70,3 +70,24 @@ outside `data/`:
 
 The database and GeoServer contents (Docker volumes) are filled when the services start: base data,
 static layers, the default area of interest, and the gauge history from heichwaasser.lu.
+
+## Versioned flood-cost releases
+
+Keep completed monetary results outside Git under `data/flood_costs/`, including
+`releases/RELEASE_ID/eddie_flood_costs_lookup_v2.json` and the exact matching
+`building_flood_damage.geojson`. The backend mounts this directory read-only;
+its optional `FLOOD_COSTS_LOOKUP_PATH` and `FLOOD_COSTS_DETAILS_PATH` must select
+one immutable release pair. Empty lookup configuration preserves database mode.
+The lookup contains the source GeoJSON SHA-256; reformatting that GeoJSON breaks
+context verification. Keep previous releases for rollback.
+
+Schema 2 supports HQ10/HQ100/HQextreme for the combined 507-building inventory,
+with 271 approved provisional classifications. Original HQ10/HQ100 results remain
+unchanged; the 87 new approvals retain null/unassessed HQ10/HQ100 amounts. The
+remaining pending/unresolved/excluded buildings are not priced as zero.
+
+Retain raw inputs, original baseline manifests, frozen approval snapshots, active
+classification ledgers/evidence and pre-approval backups externally too. Do not
+commit monetary CSV/GeoJSON, lookup JSON, sample archives, workbooks or rasters.
+See `eddie_flood_costs/README.md` for release validation, explicit calculation
+configuration, the optional database migration preflight and rollback procedure.

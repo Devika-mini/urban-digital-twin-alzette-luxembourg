@@ -6,7 +6,7 @@ import math
 import pytest
 
 from flood_costs.cost_lookup import (
-    EXCLUDED, SCENARIOS, SCHEMA_VERSION, CostLookup, InvalidScenario,
+    EXCLUDED, LEGACY_SCENARIOS as SCENARIOS, LEGACY_SCHEMA_VERSION as SCHEMA_VERSION, CostLookup, InvalidScenario,
     LookupValidationError, _totals, build_lookup, write_lookup,
 )
 

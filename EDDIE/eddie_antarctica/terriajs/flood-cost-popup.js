@@ -4,14 +4,15 @@
  */
 (function (root) {
   "use strict";
-  var SCENARIOS = ["hq10", "hq100"];
+  var SCENARIOS = ["hq10", "hq100", "hqextreme"];
+  function label(s) { return s === "hqextreme" ? "HQextreme" : s.toUpperCase(); }
   var PREFIX = "fc_popup_";
   var BODY = '<h3>Building Flood Damage</h3><p><strong>Provisional · 2010 EUR</strong></p>' +
     '<p><strong>Building ID:</strong> {{fc_popup_id}}<br>' +
     '<strong>Building category:</strong> {{fc_popup_category}}<br>' +
     '<strong>Building footprint area:</strong> {{fc_popup_area}}</p>' +
     SCENARIOS.map(function (s) {
-      return '{{#fc_popup_' + s + '_show}}<h4>' + s.toUpperCase() + '</h4>' +
+      return '{{#fc_popup_' + s + '_show}}<h4>' + label(s) + '</h4>' +
         '<p><strong>Estimated flood damage: {{fc_popup_' + s + '_damage}}</strong><br>' +
         'Estimated flood depth (wet-sample mean): {{fc_popup_' + s + '_depth}}<br>' +
         'Flood exposure: {{fc_popup_' + s + '_exposure}}</p>{{/fc_popup_' + s + '_show}}';
@@ -52,7 +53,7 @@
     // Reuse an already loaded monetary layer. Never guess from entity.id, names,
     // spatial proximity, or a different picked feature's properties.
     if (values.buildingid !== id || values.damage_currency !== "EUR" || values.damage_price_year !== 2010 ||
-        values.damage_estimates_provisional !== true || !SCENARIOS.every(function (s) {
+        values.damage_estimates_provisional !== true || !SCENARIOS.slice(0, 2).every(function (s) {
       return Object.prototype.hasOwnProperty.call(values, "damage_" + s + "_status");
     })) return null;
     var accepted = values.accepted_provisional_classification === true;
@@ -60,6 +61,7 @@
       currency: "EUR", price_year: 2010, provisional: true, warnings: [],
       footprint_area_m2: allowWholeArea !== false && values.monetary_method && number(values.footprint_part_count, true) ? values.footprint_area_m2 : null };
     SCENARIOS.forEach(function (s) {
+      if (!Object.prototype.hasOwnProperty.call(values, "damage_" + s + "_status")) return;
       result[s] = { damage_eur2010: accepted ? values["damage_" + s + "_eur2010"] : null,
         monetary_status: values["damage_" + s + "_status"],
         depth_mean_m: values["depth_" + s + "_mean_m"], exposure_status: values["exposure_" + s + "_status"],
@@ -69,7 +71,7 @@
   }
   function verifiedPayload(id, payload) {
     return payload && payload.buildingid === id && typeof payload.found === "boolean" &&
-      payload.currency === "EUR" && payload.price_year === 2010 && SCENARIOS.every(function (s) { return payload[s]; });
+      payload.currency === "EUR" && payload.price_year === 2010 && SCENARIOS.slice(0, 2).every(function (s) { return payload[s]; });
   }
   function display(id, payload, enabled) {
     var matched = verifiedPayload(id, payload) && payload.found;
@@ -77,7 +79,8 @@
     var category = matched && ["Residential", "Commercial", "Industrial"].indexOf(payload.category) >= 0 ? payload.category : "Unknown";
     var result = { fc_popup_ready: true, fc_popup_id: escapeText(id), fc_popup_category: category,
       fc_popup_area: matched ? format(payload.footprint_area_m2, " m²", true) : "N/A",
-      fc_popup_no_scenario: !enabled.hq10 && !enabled.hq100, fc_popup_comparing: enabled.hq10 && enabled.hq100 };
+      fc_popup_no_scenario: !SCENARIOS.some(function (s) { return enabled[s]; }),
+      fc_popup_comparing: SCENARIOS.filter(function (s) { return enabled[s]; }).length > 1 };
     if (!matched) warnings.push("No verified flood-cost record is available for this building.");
     var exposure = { none: "Not exposed", touched_or_partial: "Touched or partly exposed", fully_contained: "Fully within the flood extent" };
     SCENARIOS.forEach(function (s) {
@@ -86,7 +89,12 @@
       result[PREFIX + s + "_damage"] = money(cost);
       result[PREFIX + s + "_depth"] = cost ? format(cost.depth_mean_m, " m") : "N/A";
       result[PREFIX + s + "_exposure"] = cost ? exposure[cost.exposure_status] || "N/A" : "N/A";
-      if (!enabled[s] || !cost) return;
+      if (!enabled[s]) return;
+      if (!cost) { if (matched) warnings.push(label(s) + " is unavailable in this dataset."); return; }
+      if (cost.monetary_status === "not_assessed") warnings.push(label(s) + " was not assessed for this newly approved classification; damage remains unknown.");
+      if ((cost.quality_flags || []).indexOf("positive_depth_only_in_excluded_boundary_samples") >= 0) warnings.push("Positive depths occur only on excluded boundary samples; the interior-area estimate is zero.");
+      if ((cost.quality_flags || []).indexOf("user_approved_provisional_not_independent_use_verification") >= 0 ||
+          (cost.quality_flags || []).indexOf("residential_landuse_proxy_not_building_use_survey") >= 0) warnings.push("Approved provisional category; building use has not been independently verified.");
       if (cost.monetary_status === "unknown_classification") warnings.push("Building category is unresolved.");
       if (cost.monetary_status === "excluded_outside_corridor") warnings.push("Building is outside the assessed classification corridor.");
       if (cost.monetary_status === "unknown_depth_coverage") warnings.push("Incomplete depth coverage; full-building damage is unknown.");
@@ -116,9 +124,13 @@
     });
   }
   function mapScenario(document, terria) {
+    if (root.AlzetteTwin && typeof root.AlzetteTwin.getState === "function") {
+      var state = root.AlzetteTwin.getState();
+      if (state && Object.prototype.hasOwnProperty.call(state, "scenario")) return SCENARIOS.indexOf(state.scenario) >= 0 ? state.scenario : null;
+    }
     var boxes = SCENARIOS.map(function (s) { return document && document.getElementById("water-level-control-" + s); });
     if (boxes.some(Boolean)) {
-      return boxes[1] && boxes[1].checked ? "hq100" : boxes[0] && boxes[0].checked ? "hq10" : null;
+      return SCENARIOS.find(function (s, i) { return boxes[i] && boxes[i].checked; }) || null;
     }
     // Supports a scenario-specific catalog when the custom map controls are absent.
     var selected = null;
@@ -134,10 +146,10 @@
   }
   function createController(terria, options) {
     options = options || {};
-    var enabled = { hq10: false, hq100: false }, activeMap, activeId = null;
+    var enabled = { hq10: false, hq100: false, hqextreme: false }, activeMap, activeId = null;
     var cache = new Map(), templates = new WeakSet(), last = null, pending = null, busy = false;
     function reset(scenario) {
-      enabled.hq10 = scenario === "hq10"; enabled.hq100 = scenario === "hq100";
+      SCENARIOS.forEach(function (s) { enabled[s] = scenario === s; });
     }
     function installTemplate(item) {
       if (!item || templates.has(item) || typeof item.setTrait !== "function") return;
@@ -224,10 +236,10 @@
           // supplement it only when BOTH saved scenario amounts/statuses agree.
           if (payload && payload.found && !number(payload.footprint_area_m2, true) && native &&
               !(payload.warnings || []).length &&
-              SCENARIOS.every(function (s) { return payload[s].damage_eur2010 === native[s].damage_eur2010 &&
+              SCENARIOS.filter(function (s) { return payload[s]; }).every(function (s) { return native[s] && payload[s].damage_eur2010 === native[s].damage_eur2010 &&
                 payload[s].monetary_status === native[s].monetary_status; })) {
             payload = Object.assign({}, payload, { footprint_area_m2: native.footprint_area_m2 });
-            SCENARIOS.forEach(function (s) { payload[s] = Object.assign({}, native[s], payload[s], {
+            SCENARIOS.filter(function (s) { return payload[s]; }).forEach(function (s) { payload[s] = Object.assign({}, native[s], payload[s], {
               depth_mean_m: number(payload[s].depth_mean_m) ? payload[s].depth_mean_m : native[s].depth_mean_m,
               exposure_status: payload[s].exposure_status || native[s].exposure_status }); });
           }
@@ -235,7 +247,7 @@
           Object.keys(values).forEach(function (key) { setProperty(feature, key, values[key], time); });
           installTemplate(owner);
         });
-        if (options.onUpdate) options.onUpdate({ buildingid: id, hq10: enabled.hq10, hq100: enabled.hq100 });
+        if (options.onUpdate) options.onUpdate({ buildingid: id, hq10: enabled.hq10, hq100: enabled.hq100, hqextreme: enabled.hqextreme });
       } finally { busy = false; }
     }
     return {
@@ -251,7 +263,7 @@
         });
         pending = Object.assign({}, last, { oldEntities: oldEntities, until: Date.now() + 15000 });
       },
-      state: function () { return { buildingid: activeId, hq10: enabled.hq10, hq100: enabled.hq100 }; }
+      state: function () { return { buildingid: activeId, hq10: enabled.hq10, hq100: enabled.hq100, hqextreme: enabled.hqextreme }; }
     };
   }
   function findContext(document) {
@@ -275,7 +287,7 @@
     SCENARIOS.forEach(function (s) {
       var label = document.createElement("label"), box = document.createElement("input");
       box.type = "checkbox"; box.id = "flood-cost-popup-" + s; label.style.marginLeft = "10px";
-      label.appendChild(box); label.appendChild(document.createTextNode(" " + s.toUpperCase())); panel.appendChild(label); boxes[s] = box;
+      label.appendChild(box); label.appendChild(document.createTextNode(" " + label(s))); panel.appendChild(label); boxes[s] = box;
     });
     var note = document.createElement("p"); note.textContent = "Popup only · map controls are unchanged"; note.style.marginBottom = "0"; panel.appendChild(note);
     document.body.appendChild(panel);
@@ -296,6 +308,7 @@
           }
         });
         SCENARIOS.forEach(function (s) { panel.boxes[s].addEventListener("change", function () { controller.setScenario(s, this.checked); }); });
+        root.addEventListener("alzette-twin-change", function () { controller.tick(); });
         root.addEventListener("hashchange", function () { controller.navigation(); controller.tick(); });
         root.document.addEventListener("change", function (event) {
           if (/^water-level-control-hq(?:10|100|extreme)$/.test(event.target.id)) Promise.resolve().then(controller.tick);

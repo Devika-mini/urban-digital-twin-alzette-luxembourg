@@ -343,7 +343,7 @@
   // Estimated building damage of a scenario (eddie_flood_costs: HQ10 and HQ100 only).
   function showDamage(name) {
     ui.damage.textContent = "";
-    if (name !== "hq10" && name !== "hq100") {
+    if (SCENARIO_NAMES.indexOf(name) < 0) {
       return;
     }
     fetch(BACKEND_URL + "/flood-costs/summary/" + name + ".json")

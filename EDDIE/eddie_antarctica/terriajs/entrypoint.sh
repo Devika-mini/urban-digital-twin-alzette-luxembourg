@@ -44,9 +44,11 @@ fi
 if ! grep -q "water-level-control.js" wwwroot/index.html
 then
   sed -i \
-    's#</body>#<script src="/water-level-control.js?v=22"></script></body>#' \
+    's#</body>#<script src="/water-level-control.js?v=23"></script></body>#' \
     wwwroot/index.html
 fi
+# Refresh the query version when this page already contains an older injection.
+sed -i 's#src="/water-level-control.js?v=[^"]*"#src="/water-level-control.js?v=23"#g' wwwroot/index.html
 # Inject the mode selection (entry screen, Casual / In-depth switch) and the Casual mode panel.
 for SCRIPT in twin-mode.js casual-ui.js
 do
@@ -60,10 +62,9 @@ if [[ -f "wwwroot/flood-cost-popup.js" ]]; then
   SUBBED=$(envsubst "$ENV_VARS_TO_FILL" < "wwwroot/flood-cost-popup.js")
   echo "$SUBBED" > "wwwroot/flood-cost-popup.js"
   if ! grep -q 'src="/flood-cost-popup.js' wwwroot/index.html; then
-    sed -i 's#</body>#<script src="/flood-cost-popup.js?v=1"></script></body>#' wwwroot/index.html
+    sed -i 's#</body>#<script src="/flood-cost-popup.js?v=2"></script></body>#' wwwroot/index.html
   fi
+  sed -i 's#src="/flood-cost-popup.js?v=[^"]*"#src="/flood-cost-popup.js?v=2"#g' wwwroot/index.html
 fi
 # Run original terria startup command
 node ./node_modules/terriajs-server/lib/app.js --config-file serverconfig.json
-
-

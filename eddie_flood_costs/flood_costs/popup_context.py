@@ -49,14 +49,14 @@ class PopupDetails:
         properties = self.records.get(buildingid)
         if properties is None:
             raise LookupValidationError("Original building ID is absent from popup context.")
-        if _record(properties) != document["buildings"].get(buildingid):
+        if _record(properties, lookup.scenarios) != document["buildings"].get(buildingid):
             raise LookupValidationError("Popup classification/damage disagrees with lookup.")
         return properties
 
 
 def build_popup_payload(lookup, buildingid, details=None, context_warning=None):
     """Join by the exact original ID; unknown amounts stay null, including 404s."""
-    costs = {scenario: lookup.building_cost(buildingid, scenario) for scenario in SCENARIOS}
+    costs = {scenario: lookup.building_cost(buildingid, scenario) for scenario in lookup.scenarios}
     first = costs["hq10"]
     properties = {}
     warnings = []
@@ -75,6 +75,7 @@ def build_popup_payload(lookup, buildingid, details=None, context_warning=None):
         "buildingid": buildingid, "found": first["found"],
         "category": category or "Unknown", "currency": "EUR", "price_year": 2010,
         "provisional": True, "dataset_version": first["dataset_version"],
+        "schema_version": first["schema_version"], "available_scenarios": list(lookup.scenarios),
         "footprint_area_m2": _number(properties.get("footprint_area_m2"), positive=True),
         "context_available": bool(properties), "warnings": warnings,
     }

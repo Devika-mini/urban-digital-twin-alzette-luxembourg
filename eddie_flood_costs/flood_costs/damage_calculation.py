@@ -1,7 +1,7 @@
-"""JRC damage calculation using the validated reconstructed depths and review.
+"""JRC damage calculation using verified external evidence and fresh output stages.
 
-Configuration and all generated products remain in an external data project.
 No reconstruction, original-data edits, service access, or network operations.
+Run using the existing devika virtualenv interpreter with -B.
 """
 import os
 os.environ['PROJ_NETWORK'] = 'OFF'
@@ -25,34 +25,37 @@ import pandas as pd
 import shapely
 from shapely.geometry import MultiPoint, Point, shape
 
-from . import WorkflowPaths
+from . import WorkflowPaths, SCENARIOS, LEGACY_SCENARIOS, SCENARIO_PAIRS
 
-SCENARIOS = ('hq10', 'hq100')
 CATEGORIES = ('Residential', 'Commercial', 'Industrial')
 PRODUCTS = ['building_flood_damage.geojson','building_flood_damage.csv','damage_summary.csv',
-    'damage_validation.json','methodology.md','jrc_parameters.json','sample_damage_weights.csv.gz']
+    'damage_validation.json','methodology.md','jrc_parameters.json','sample_damage_weights.csv.gz','pending_classification_review.csv']
 BOUNDARY_TOL_M = 1e-5
 NS = {'s':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
 
 
 def configure(paths=None):
     """Resolve the original workflow inputs without changing the calculation."""
-    global OUT, LOCAL, ROOT, WORKBOOK, INPUTS
+    global OUT, LOCAL, ROOT, WORKBOOK, INPUTS, baseline_path, verify_baseline, baseline_provenance, portable_path
     paths = paths or WorkflowPaths()
     OUT = paths.stage_path('monetary')
     LOCAL = paths.output_root
     ROOT = paths.project_root
+    baseline_path, verify_baseline = paths.baseline_path, paths.verify_baseline
+    baseline_provenance, portable_path = paths.baseline_provenance, paths.portable_path
+    classification = paths.classification_root()
     WORKBOOK = paths.input_path('jrc_workbook')
     INPUTS = [paths.stage_path('depth')/'building_reconstructed_depths.geojson',
         paths.stage_path('depth')/'building_reconstructed_depths.csv',
         paths.stage_path('depth')/'building_depth_samples.csv.gz',
-        paths.stage_path('osm')/'provisionally_classified_buildings.csv',
-        paths.stage_path('osm')/'building_jrc_osm_classification.csv', WORKBOOK,
-        paths.input_path('classification_manifest'),
-        paths.stage_path('osm')/'classification_review_decisions.json',
-        paths.stage_path('depth')/'validation_report.json']
+        classification/'provisionally_classified_buildings.csv',
+        classification/'building_jrc_osm_classification.csv', WORKBOOK,
+        classification/'target_manifest.json',
+        classification/'classification_review_decisions.json',
+        paths.stage_path('depth')/'validation_report.json',
+        classification/'hqextreme_review/building_evidence.json',
+        classification/'hqextreme_review/review_decisions.json']
     return paths
-
 
 def emit(stage, **values):
     print(json.dumps({'stage':stage, **values}, ensure_ascii=False, allow_nan=False), flush=True)
@@ -248,12 +251,107 @@ def build_weights(footprint, allocation_geometry, samples, source_area):
     return weights,interior,missing_support_area,valuation_area,max_partition_error
 
 
+def validate_active_inventory(paths=None):
+    """Validate append-only authorisation against frozen original decisions/evidence."""
+    paths = paths or WorkflowPaths()
+    paths.verify_baseline()
+    baseline_path, stage_path = paths.baseline_path, paths.stage_path
+    out = paths.classification_root()
+    unique = lambda rows: unique_index(rows, 'active approval evidence')
+    original=read_csv(baseline_path('osm')/'provisionally_classified_buildings.csv')
+    current=read_csv(out/'provisionally_classified_buildings.csv')
+    master=unique(current)
+    assert current[:len(original)]==original
+    ledger=json.loads((out/'classification_review_decisions.json').read_text())
+    prior=json.loads((baseline_path('osm')/'classification_review_decisions.json').read_text())
+    assert ledger['decisions'][:len(prior['decisions'])]==prior['decisions']
+    approved={bid:r for bid,r in unique(ledger['decisions']).items() if r['review_decision']=='approved_user_provisional'}
+    assert set(master)-set(unique(original))==set(approved)
+    details=unique(read_csv(out/'building_jrc_osm_classification.csv'))
+    proposal=unique(read_csv(out/'hqextreme_review/building_classification_review.csv'))
+    evidence=unique(json.loads((out/'hqextreme_review/building_evidence.json').read_text())['targets'])
+    final = unique(json.loads((out/'hqextreme_review/review_decisions.json').read_text())['decisions'])
+    assert {bid for bid, row in final.items() if row['human_approved']} == set(approved)
+    for bid,decision in approved.items():
+        assert final[bid]['decision'] == 'approved_user_provisional'
+        assert final[bid]['effective_jrc_category'] == decision['effective_jrc_category']
+        assert decision['human_approved'] is True and decision['independently_verified_building_use'] is False
+        assert decision['review_decision_source']=='explicit_user_approval_in_conversation' and decision['review_decision_utc']
+        assert master[bid]['jrc_category']==details[bid]['effective_jrc_category']==proposal[bid]['proposed_jrc_category']==decision['effective_jrc_category']
+        assert master[bid]['classification_confidence']==proposal[bid]['classification_confidence']==decision['classification_confidence']
+        assert json.loads(details[bid]['osm_evidence_json'])==evidence[bid]['osm_evidence']
+        assert decision['potential_conflicts']==json.loads(proposal[bid]['potential_conflicts'])
+        assert decision['quality_flags']==json.loads(proposal[bid]['quality_flags'])
+    depths=unique(read_csv(stage_path('depth')/'building_reconstructed_depths.csv'))
+    original_ids=set(unique(read_csv(baseline_path('depth')/'building_reconstructed_depths.csv')))
+    pending=set(depths)-original_ids-set(approved)
+    return {'current_accepted':len(master),'new_user_approved_provisional':len(approved),
+            'current_category_counts':dict(Counter(r['jrc_category'] for r in current)),
+            'current_additional_pending_review':len(pending),
+            'remaining_unapproved_or_excluded':len(depths)-len(master),
+            'original_master_and_ledger_entries_preserved':True}
+
+def approval_regression(saved_geo, audit_path, ledger):
+    """Reconcile an approval extension to its immutable pre-update combined backup."""
+    batches=ledger.get('approval_batches',[])
+    if not batches:
+        return {}
+    backup=(ROOT/batches[-1]['pre_approval_backup']).resolve()
+    assert backup.is_relative_to(ROOT/'backups')
+    manifest=backup/'manifest.json'
+    old_document=json.loads((backup/'outputs/monetary_damage/building_flood_damage.geojson').read_text())
+    old=unique_index([f['properties'] for f in old_document['features']],'pre-approval records')
+    current=unique_index([f['properties'] for f in saved_geo['features']],'current records')
+    assert set(old)==set(current)
+    geometries={f['properties']['buildingid']:f['geometry'] for f in old_document['features']}
+    assert all(f['geometry']==geometries[f['properties']['buildingid']] for f in saved_geo['features'])
+    original_accepted={bid for bid,row in old.items() if row['accepted_provisional_classification']}
+    for bid,row in old.items():
+        for scenario in LEGACY_SCENARIOS:
+            assert row[f'damage_{scenario}_eur2010']==current[bid][f'damage_{scenario}_eur2010']
+        if bid in original_accepted:
+            for key,value in row.items():
+                if key.startswith('damage_hqextreme_') or key in ('valuation_area_m2','shared_overlap_removed_from_valuation_m2'):
+                    assert current[bid][key]==value,(bid,key)
+    with gzip.open(backup/'outputs/monetary_damage/sample_damage_weights.csv.gz','rt',newline='') as handle:
+        before=[row for row in csv.DictReader(handle) if row['scenario']=='hqextreme']
+    with gzip.open(audit_path,'rt',newline='') as handle:
+        audit=list(csv.DictReader(handle))
+    after=[row for row in audit if row['scenario']=='hqextreme' and row['buildingid'] in original_accepted]
+    assert before==after
+    new=set(current)-set(original_accepted)
+    new={bid for bid in new if current[bid]['accepted_provisional_classification']}
+    contributions={bid:[] for bid in new}
+    for row in audit:
+        if row['scenario']=='hqextreme' and row['buildingid'] in new and row['damage_component_eur2010']:
+            contributions[row['buildingid']].append(float(row['damage_component_eur2010']))
+    for bid in new:
+        amount=current[bid]['damage_hqextreme_eur2010']
+        if amount is not None:
+            assert abs(math.fsum(contributions[bid])-amount)<1e-6,bid
+    return {'pre_approval_backup':str(backup.relative_to(ROOT)),
+        'pre_approval_manifest_sha256':hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        'all_507_ids_geometries_and_hq10_hq100_amounts_preserved':True,
+        'original_184_hqextreme_estimates_and_sample_contributions_preserved_exactly':True,
+        'new_approval_sample_contributions_reconciled':True,
+        'additional_hqextreme_known_damage_eur2010':math.fsum(current[bid]['damage_hqextreme_eur2010'] for bid in new if current[bid]['damage_hqextreme_eur2010'] is not None)}
+
+
 def main():
     paths = configure()
     paths.guard_output(OUT)
     assert all(p.is_file() for p in INPUTS), 'Missing required local input'
     assert not any((OUT/n).exists() for n in PRODUCTS), 'Monetary product already exists; refusing overwrite'
     hashes={str(p):{'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'bytes':p.stat().st_size} for p in INPUTS}
+    verify_baseline()
+    validate_active_inventory(paths)
+    baseline_document=json.loads((baseline_path('monetary')/'building_flood_damage.geojson').read_text())
+    baseline_records=unique_index([f['properties'] for f in baseline_document['features']], 'baseline monetary')
+    baseline_validation=json.loads((baseline_path('monetary')/'damage_validation.json').read_text())
+    baseline_audit={}
+    with gzip.open(baseline_path('monetary')/'sample_damage_weights.csv.gz', 'rt', newline='') as handle:
+        for row in csv.DictReader(handle):
+            baseline_audit.setdefault((row['buildingid'], row['scenario']), []).append(row)
     OUT.mkdir(parents=True,exist_ok=True)
     jrc=read_jrc(); parameters=jrc['parameters']; method_checks=numeric_method_checks(parameters)
     document=json.loads(INPUTS[0].read_text())
@@ -265,21 +363,35 @@ def main():
     ledger=json.loads(INPUTS[7].read_text())
     prior_validation=json.loads(INPUTS[8].read_text())
     outside=set(manifest['excluded_outside_corridor_buildingids'])
-    assert len(features)==276 and set(features)==set(csv_depth)
-    assert len(accepted)==184 and Counter(r['jrc_category'] for r in accepted.values())==Counter({'Residential':174,'Commercial':10})
-    assert len(osm)==42 and len(outside)==60
+    assert set(baseline_records) <= set(features) and set(features)==set(csv_depth)
+    original_accepted=unique_index(read_csv(baseline_path('osm')/'provisionally_classified_buildings.csv'),'original accepted classifications')
+    assert all(accepted.get(bid)==row for bid,row in original_accepted.items()), 'Original approved records changed'
+    new_approved=set(accepted)-set(original_accepted)
+    decisions=unique_index(ledger['decisions'],'review decisions')
+    expected_new={bid for bid,row in decisions.items() if row['review_decision']=='approved_user_provisional'}
+    assert new_approved==expected_new and new_approved.isdisjoint(baseline_records)
+    for bid in new_approved:
+        decision=decisions[bid]
+        assert decision['human_approved'] is True and decision['independently_verified_building_use'] is False
+        assert decision['review_decision_source']=='explicit_user_approval_in_conversation' and decision['review_decision_utc']
+        assert accepted[bid]['jrc_category']==decision['effective_jrc_category'] in CATEGORIES
+        assert accepted[bid]['classification_confidence']==decision['classification_confidence']
+    original_ledger=json.loads((baseline_path('osm')/'classification_review_decisions.json').read_text())
+    assert ledger['decisions'][:len(original_ledger['decisions'])]==original_ledger['decisions']
+    pending=set(features)-set(baseline_records)-set(accepted)
+    assert set(osm) <= set(baseline_records)|new_approved and outside <= set(baseline_records)
     assert set(accepted).isdisjoint(outside)
-    unresolved=set(features)-set(accepted)-outside
-    assert len(unresolved)==32 and unresolved<=set(osm)
+    unresolved=set(baseline_records)-set(accepted)-outside
+    assert unresolved<=set(osm)
     assert set(accepted)<=set(features)
     for bid,b in features.items():
-        assert b['exposure_hq100_code']>0
+        assert any(b[f'exposure_{scenario}_code']>0 for scenario in SCENARIOS) or bid in baseline_records
         assert abs(b['footprint_area_m2']-float(csv_depth[bid]['footprint_area_m2']))<1e-7
         for s in SCENARIOS:
             for stat in ('min','mean','max','all_valid_mean'):
                 field=f'depth_{s}_{stat}_m'; value=csv_depth[bid][field]
                 assert (b[field] is None and value=='') or (b[field] is not None and abs(b[field]-float(value))<1e-9)
-    assert len([d for d in ledger['decisions'] if d['review_decision']=='approved_commercial_proxy'])==3
+    assert len([d for d in ledger['decisions'] if d['review_decision']=='approved_commercial_proxy'])==baseline_validation['classification']['approved_medium_proxies']
     for bid,r in accepted.items():
         if bid in osm:
             assert r['jrc_category']==osm[bid]['effective_jrc_category']
@@ -303,7 +415,9 @@ def main():
     geometries=dict(zip(features,projected))
     assert projected.is_valid.all() and not projected.is_empty.any()
     # Allocate tiny shared footprint slivers once, with deterministic source-ID order.
-    classified_ids=sorted(accepted)
+    # Original accepted cohort keeps its established allocation priority and weights.
+    # Newly approved IDs then share only the remaining area in lexical ID order.
+    classified_ids=sorted(original_accepted)+sorted(new_approved)
     classified_geometries=np.array([geometries[bid] for bid in classified_ids],dtype=object)
     tree=shapely.STRtree(classified_geometries)
     allocated={}; overlap_pairs=[]; removed={}
@@ -321,7 +435,7 @@ def main():
     original_union=shapely.union_all(classified_geometries)
     assert abs(allocated_sum-original_union.area)<1e-5
     grouped={(bid,s):g.sort_values('sample_index').reset_index(drop=True) for (bid,s),g in samples.groupby(['buildingid','scenario'],sort=False)}
-    results=[]; comparisons=[]; support_diagnostics=[]; cap_count=Counter(); boundary_counts=Counter()
+    results=[]; comparisons=[]; support_diagnostics=[]; cap_count=Counter(baseline_validation['beyond_curve_saturation_sample_count']); boundary_counts=Counter()
     audit_fields=['buildingid','sample_index','part_index','x_epsg2169','y_epsg2169','weight_m2','scenario',
         'reconstruction_valid','official_extent_contains_sample','ground_elevation_m','chainage_m',
         'scenario_wse_m','official_masked_depth_m','jrc_damage_fraction','damage_component_eur2010']
@@ -332,12 +446,15 @@ def main():
             osmr=osm.get(bid,{})
             record.update({
                 'jrc_category':category,'accepted_provisional_classification':bid in accepted,
-                'classification_scope':'classified_subset' if category else 'excluded_outside_landuse_corridor' if bid in outside else 'unresolved_in_corridor',
-                'classification_source':'osm_classification/provisionally_classified_buildings.csv' if category else 'osm_classification/target_manifest.json' if bid in outside else 'osm_classification/building_jrc_osm_classification.csv',
+                'classification_scope':'classified_subset' if category else 'pending_classification_review' if bid in pending else 'excluded_outside_landuse_corridor' if bid in outside else 'unresolved_in_corridor',
+                'classification_source':'osm_classification/provisionally_classified_buildings.csv' if category else 'monetary_damage/pending_classification_review.csv' if bid in pending else 'osm_classification/target_manifest.json' if bid in outside else 'osm_classification/building_jrc_osm_classification.csv',
                 'classification_basis':accepted[bid]['classification_basis'] if category else None,
                 'classification_confidence':accepted[bid]['classification_confidence'] or None if category else osmr.get('classification_confidence'),
                 'classification_review_decision':accepted[bid]['review_decision'] if category else osmr.get('review_decision'),
                 'classification_review_reason':osmr.get('review_decision_reason'),
+                'classification_review_utc':osmr.get('review_decision_utc') or None,
+                'classification_review_scope':osmr.get('review_scope') or None,
+                'classification_mapping_assumptions':osmr.get('mapping_assumptions') or None,
                 'pre_review_proposed_jrc_category':osmr.get('pre_review_proposed_jrc_category') or None,
                 'classification_quality_flags':osmr.get('quality_flags') or None,
                 'classification_osm_evidence_json':osmr.get('osm_evidence_json') or None,
@@ -350,9 +467,20 @@ def main():
                 'valuation_area_m2':None,'interior_samples_for_weighting':None,'boundary_or_exterior_samples_excluded':None,
             })
             if category:
-                s10=grouped[(bid,'hq10')]; s100=grouped[(bid,'hq100')]
-                assert np.array_equal(s10[['sample_index','part_index','x_epsg2169','y_epsg2169']].to_numpy(),s100[['sample_index','part_index','x_epsg2169','y_epsg2169']].to_numpy())
+                s10=grouped[(bid,SCENARIOS[0])]
+                for scenario in SCENARIOS[1:]:
+                    assert np.array_equal(s10[['sample_index','part_index','x_epsg2169','y_epsg2169']].to_numpy(),grouped[(bid,scenario)][['sample_index','part_index','x_epsg2169','y_epsg2169']].to_numpy())
                 weights,interior,unsupported,valuation_area,partition_error=build_weights(geometries[bid],allocated[bid],s10,original['footprint_area_m2'])
+                # Preserve the exact saved area weights as well as the original monetary records.
+                if bid in original_accepted:
+                    saved_weights=np.zeros(len(s10))
+                    saved_interior=np.zeros(len(s10), dtype=bool)
+                    for saved in baseline_audit[(bid,LEGACY_SCENARIOS[0])]:
+                        j=int(saved['sample_index']); saved_weights[j]=float(saved['weight_m2']); saved_interior[j]=True
+                    assert np.array_equal(interior,saved_interior)
+                    assert np.allclose(weights,saved_weights,rtol=0,atol=1e-7)
+                    weights=saved_weights
+                    valuation_area=baseline_records[bid]['valuation_area_m2']
                 tolerance=max(1e-6,valuation_area*1e-9)
                 record.update(valuation_area_m2=valuation_area,interior_samples_for_weighting=int(interior.sum()),
                     boundary_or_exterior_samples_excluded=int((~interior).sum()))
@@ -362,15 +490,32 @@ def main():
             per_scenario={}
             for s in SCENARIOS:
                 prefix=f'damage_{s}_'
+                if bid in baseline_records and s in LEGACY_SCENARIOS:
+                    # Do not recalculate validated legacy money or its sample contributions.
+                    record.update({key:value for key,value in baseline_records[bid].items() if key.startswith(prefix)})
+                    if category:
+                        audit.writerows(baseline_audit[(bid,s)])
+                        sg=grouped[(bid,s)]
+                        per_scenario[s]=(sg.reconstruction_valid.to_numpy(dtype=bool), sg.official_masked_depth_m.to_numpy(float), None)
+                    continue
                 flags=['provisional_reconstructed_depths','vertical_datum_unverified','terrain_depth_used_without_finished_floor_levels']
-                empty={'eur2010':None,'fraction':None,'status':'unknown_classification' if bid in unresolved else 'excluded_outside_corridor',
+                empty={'eur2010':None,'fraction':None,'status':'unknown_classification' if bid in unresolved or bid in pending else 'excluded_outside_corridor',
                     'positive_damage':None,'coverage_fraction':None,'valid_weighted_area_m2':None,
                     'unknown_weighted_area_m2':None,'known_area_damage_component_eur2010':None,
                     'known_fraction_component':None,'area_weighted_depth_m':None,'valid_dry_weighted_area_m2':None,
                     'valid_wet_weighted_area_m2':None,'valid_interior_samples':None,'missing_interior_samples':None,
                     'above_curve_maximum_sample_count':None,'quality_flags':None}
+                if bid in new_approved and s in LEGACY_SCENARIOS:
+                    # This approval authorises HQextreme valuation only. Classification
+                    # acceptance is distinct from assessment of a particular scenario.
+                    empty['status']='not_assessed'
+                    empty['quality_flags']='|'.join(flags+['new_classification_approved_hqextreme_only','legacy_scenario_unassessed_amount_preserved_null'])
+                    record.update({prefix+k:v for k,v in empty.items()})
+                    sg=grouped[(bid,s)]
+                    per_scenario[s]=(sg.reconstruction_valid.to_numpy(dtype=bool),sg.official_masked_depth_m.to_numpy(float),None)
+                    continue
                 if not category:
-                    flags.append('classification_unknown_no_zero_loss_imputed' if bid in unresolved else 'outside_processed_corridor_excluded_no_zero_loss_imputed')
+                    flags.append('new_building_classification_pending_review' if bid in pending else 'classification_unknown_no_zero_loss_imputed' if bid in unresolved else 'outside_processed_corridor_excluded_no_zero_loss_imputed')
                     empty['quality_flags']='|'.join(flags)
                     record.update({prefix+k:v for k,v in empty.items()})
                     continue
@@ -391,8 +536,11 @@ def main():
                 if original[f'samples_missing_{s}']>0: flags.append('original_reconstruction_sample_coverage_incomplete')
                 if original[f'samples_missing_{s}']>0 and complete: flags.append('missing_original_samples_have_no_valuation_area_after_boundary_exclusion')
                 if removed[bid]>0: flags.append('shared_footprint_overlap_allocated_once')
-                if record['classification_confidence']=='medium': flags.append('user_approved_medium_confidence_commercial_proxy')
+                if category=='Commercial' and record['classification_confidence']=='medium': flags.append('user_approved_medium_confidence_commercial_proxy')
                 if category=='Residential': flags.append('residential_landuse_proxy_not_building_use_survey')
+                if bid in new_approved:
+                    flags.append('user_approved_provisional_not_independent_use_verification')
+                    flags.extend(flag for flag in (osmr.get('quality_flags') or '').split('|') if flag and flag not in flags)
                 if bid=='ACT_e87a8e74-c1c1-461b-bb4f-141698ee93b7': flags.append('museum_standard_commercial_contents_proxy_not_specialist_collections_valuation')
                 if high.any(): flags.append('depth_above_6m_fraction_saturated_at_published_maximum')
                 if original[f'exposure_{s}_code']>0 and complete and monetary==0:
@@ -426,36 +574,42 @@ def main():
                         'official_masked_depth_m':depths[j],'jrc_damage_fraction':f[j],
                         'damage_component_eur2010':float(weights[j]*maximum*f[j]) if valid[j] else None}))
             if category:
-                v10,d10,f10=per_scenario['hq10']; v100,d100,f100=per_scenario['hq100']
-                common=(weights>0)&v10&v100
-                bad=common&(d100+1e-6<d10)
-                wse10=grouped[(bid,'hq10')].scenario_wse_m.to_numpy(float)
-                wse100=grouped[(bid,'hq100')].scenario_wse_m.to_numpy(float)
-                bad_wse=common&(wse100+1e-6<wse10)
-                a=record['damage_hq10_eur2010']; b=record['damage_hq100_eur2010']
-                monetary_bad=b+1e-6<a if a is not None and b is not None else None
-                record['damage_hq100_below_hq10']=monetary_bad
-                record['weighted_sample_depth_order_violation_count']=int(bad.sum())
-                comparisons.append({'buildingid':bid,'common_known_area_m2':float(weights[common].sum()),
-                    'sample_depth_decrease_count':int(bad.sum()),'sample_wse_decrease_count':int(bad_wse.sum()),
-                    'damage_hq100_below_hq10':monetary_bad,'both_damage_estimates_known':a is not None and b is not None,
-                    'hq10_coverage_fraction':record['damage_hq10_coverage_fraction'],
-                    'hq100_coverage_fraction':record['damage_hq100_coverage_fraction']})
-                if monetary_bad:
-                    for s in SCENARIOS: record[f'damage_{s}_quality_flags']+='|hq100_damage_below_hq10_requires_review'
-            else:
-                record['damage_hq100_below_hq10']=None
-                record['weighted_sample_depth_order_violation_count']=None
+                for low, high in SCENARIO_PAIRS:
+                    vlo,dlo,_=per_scenario[low]; vhi,dhi,_=per_scenario[high]
+                    common=(weights>0)&vlo&vhi
+                    bad=common&(dhi+1e-6<dlo)
+                    wlo=grouped[(bid,low)].scenario_wse_m.to_numpy(float)
+                    whi=grouped[(bid,high)].scenario_wse_m.to_numpy(float)
+                    bad_wse=common&(whi+1e-6<wlo)
+                    a=record[f'damage_{low}_eur2010']; b=record[f'damage_{high}_eur2010']
+                    monetary_bad=b+1e-6<a if a is not None and b is not None else None
+                    record[f'damage_{high}_below_{low}']=monetary_bad
+                    record[f'{high}_vs_{low}_weighted_sample_depth_order_violation_count']=int(bad.sum())
+                    comparisons.append({'buildingid':bid,'lower_scenario':low,'higher_scenario':high,
+                        'common_known_area_m2':float(weights[common].sum()),
+                        'sample_depth_decrease_count':int(bad.sum()),'sample_wse_decrease_count':int(bad_wse.sum()),
+                        'damage_decreases':monetary_bad,'both_damage_estimates_known':a is not None and b is not None})
+                    if monetary_bad and high not in LEGACY_SCENARIOS:
+                        record[f'damage_{high}_quality_flags']+=f'|{high}_damage_below_{low}_requires_review'
+            if bid in baseline_records:
+                record.update(baseline_records[bid])
+            record['comparison_cohort']=bid in baseline_records
+            record['classification_review_required']=bid in pending
             results.append(record)
-            if (index+1)%50==0: emit('buildings_evaluated',count=index+1,total=276)
+            if (index+1)%50==0: emit('buildings_evaluated',count=index+1,total=len(features))
 
     summaries=[]
     for s in SCENARIOS:
-        for category in (*CATEGORIES,'Classified total','Unresolved in corridor','Excluded outside corridor','All buildings'):
+        for category in (*CATEGORIES,'Classified total','Unresolved in corridor','Excluded outside corridor','Pending classification review','All buildings',
+                         'Original comparison cohort','Expanded additional buildings','Newly approved buildings'):
             group=[r for r in results if r['jrc_category']==category] if category in CATEGORIES else \
                 [r for r in results if r['jrc_category']] if category=='Classified total' else \
                 [r for r in results if r['buildingid'] in unresolved] if category=='Unresolved in corridor' else \
-                [r for r in results if r['buildingid'] in outside] if category=='Excluded outside corridor' else results
+                [r for r in results if r['buildingid'] in outside] if category=='Excluded outside corridor' else \
+                [r for r in results if r['buildingid'] in pending] if category=='Pending classification review' else \
+                [r for r in results if r['buildingid'] in baseline_records] if category=='Original comparison cohort' else \
+                [r for r in results if r['buildingid'] not in baseline_records] if category=='Expanded additional buildings' else \
+                [r for r in results if r['buildingid'] in new_approved] if category=='Newly approved buildings' else results
             values=[r[f'damage_{s}_eur2010'] for r in group if r[f'damage_{s}_eur2010'] is not None]
             positive=sum(v>0 for v in values); zero=sum(v==0 for v in values)
             summaries.append({'scenario':s.upper(),'group':category,'represented_buildings':len(group),
@@ -466,7 +620,7 @@ def main():
                 'total_is_complete_for_group':len(values)==len(group),'price_year':2010,
                 'total_interpretation':'Sum of complete building estimates only; unknowns excluded, not treated as zero. Groups overlap: do not sum total and breakdown rows.'})
     byid=unique_index(results,'damage result')
-    assert set(byid)==set(features) and sum(bool(r['jrc_category']) for r in results)==184
+    assert set(byid)==set(features) and sum(bool(r['jrc_category']) for r in results)==len(accepted)
     for r in results:
         for s in SCENARIOS:
             d=r[f'damage_{s}_eur2010']; f=r[f'damage_{s}_fraction']
@@ -481,7 +635,7 @@ def main():
         total=next(r for r in group if r['group']=='Classified total')
         category_total=math.fsum(r['known_estimates_sum_eur2010'] or 0 for r in group if r['group'] in CATEGORIES)
         assert abs(total['known_estimates_sum_eur2010']-category_total)<1e-6
-        assert total['calculated_damage_buildings']+total['unknown_damage_buildings']==184
+        assert total['calculated_damage_buildings']+total['unknown_damage_buildings']==len(accepted)
     features_out=[{'type':'Feature','id':f['properties']['buildingid'],'geometry':f['geometry'],
         'properties':clean(byid[f['properties']['buildingid']])} for f in document['features']]
     (OUT/'building_flood_damage.geojson').write_text(json.dumps({'type':'FeatureCollection',
@@ -493,7 +647,7 @@ def main():
     # Read-back validation, including unchanged footprint coordinates and null encoding.
     saved_geo=json.loads((OUT/'building_flood_damage.geojson').read_text())
     saved_csv=unique_index(read_csv(OUT/'building_flood_damage.csv'),'saved CSV')
-    assert len(saved_geo['features'])==276 and len(saved_csv)==276
+    assert len(saved_geo['features'])==len(features) and len(saved_csv)==len(features)
     for before,after in zip(document['features'],saved_geo['features']):
         assert before['geometry']==after['geometry']
         bid=before['properties']['buildingid']
@@ -502,24 +656,51 @@ def main():
             assert text=='' if expected is None else abs(float(text)-expected)<1e-9
     for p in INPUTS:
         assert hashlib.sha256(p.read_bytes()).hexdigest()==hashes[str(p)]['sha256'],f'Input changed: {p}'
-    decreases=[c for c in comparisons if c['damage_hq100_below_hq10']]
+    for bid, baseline in baseline_records.items():
+        for key,value in baseline.items():
+            assert byid[bid][key]==value, (bid,key,'validated field changed')
+    for scenario in LEGACY_SCENARIOS:
+        before=next(r for r in baseline_validation['scenario_and_category_summaries'] if r['scenario']==scenario.upper() and r['group']=='Classified total')
+        after=next(r for r in summaries if r['scenario']==scenario.upper() and r['group']=='Classified total')
+        assert before['known_estimates_sum_eur2010']==after['known_estimates_sum_eur2010']
+    write_csv(OUT/'pending_classification_review.csv', [
+        {'buildingid':bid,'classification_status':'pending_review','footprint_area_m2':features[bid]['footprint_area_m2'],
+         **{f'exposure_{scenario}_status':features[bid][f'exposure_{scenario}_status'] for scenario in SCENARIOS}}
+        for bid in sorted(pending)])
+    decreases=[c for c in comparisons if c['damage_decreases']]
+    approval_checks=approval_regression(saved_geo,OUT/'sample_damage_weights.csv.gz',ledger)
     validation={
         'status':'completed_provisional_reconstructed_depth_building_damage_for_classified_subset',
         'created_utc':datetime.now(timezone.utc).isoformat(),'currency':'EUR','price_year':2010,
-        'input_files':hashes,'jrc_parameters':jrc,
-        'counts':{'represented_buildings':276,'hq100_exposed_buildings':276,'accepted_provisional_classifications':184,
+        'baseline_provenance':baseline_provenance(),
+        'approval_regression':approval_checks,
+        'input_files':{portable_path(Path(path)):value for path,value in hashes.items()},'jrc_parameters':jrc,
+        'counts':{'represented_buildings':len(features),'hq100_exposed_buildings':sum(r['exposure_hq100_code']>0 for r in results),'accepted_provisional_classifications':len(accepted),
             'accepted_category_counts':dict(Counter(r['jrc_category'] for r in accepted.values())),
-            'unresolved_in_corridor':32,'outside_corridor_excluded':60},
+            'unresolved_in_corridor':len(unresolved),'outside_corridor_excluded':len(outside),'pending_classification_review':len(pending)},
         'scenario_and_category_summaries':summaries,
-        'classification':{'approved_medium_proxies':3,'retained_high_confidence_commercial':7,
-            'residential_landuse_proxies':174,'original_confidence_and_evidence_preserved':True,
+        'legacy_preservation':{'baseline_buildings':len(baseline_records),'buildingids':sorted(baseline_records),'all_original_properties_preserved_exactly':True,'legacy_samples_and_weight_audits_reused':True,'legacy_scenarios_not_recalculated':list(LEGACY_SCENARIOS),'new_scenario_calculated':'hqextreme'},
+        'classification':{'approved_medium_proxies':sum(r['jrc_category']=='Commercial' and r['classification_confidence']=='medium' for r in accepted.values()),
+            'original_approved_medium_proxies':baseline_validation['classification']['approved_medium_proxies'],
+            'retained_high_confidence_commercial':baseline_validation['classification']['retained_high_confidence_commercial'],
+            'residential_landuse_proxies':sum(r['jrc_category']=='Residential' for r in results),'original_confidence_and_evidence_preserved':True,
             'no_industrial_classification_used':True,'unknown_classifications_never_zero_loss':True},
+        'classification_approval_extension':{'original_accepted_count':len(original_accepted),
+            'new_user_approved_provisional_count':len(new_approved),'buildingids':sorted(new_approved),
+            'category_counts':dict(Counter(accepted[bid]['jrc_category'] for bid in new_approved)),
+            'confidence_counts':dict(Counter(accepted[bid]['classification_confidence'] for bid in new_approved)),
+            'approval_batches':ledger.get('approval_batches',[]),
+            'original_184_master_rows_and_seven_ledger_decisions_preserved':True,
+            'independently_verified_building_uses':False,
+            'monetary_scope':'hqextreme only; new approvals retain null/not_assessed HQ10/HQ100',
+            'new_approved_unknown_depth_buildingids':[bid for bid in sorted(new_approved) if byid[bid]['damage_hqextreme_status']=='unknown_depth_coverage'],
+            'cohort_summaries':[r for r in summaries if r['group'] in ('Original comparison cohort','Expanded additional buildings','Newly approved buildings')]},
         'weighting':{'method':'Clipped nearest-interior-sample Voronoi cells; boundary-only samples excluded',
             'sample_grid_spacing_m':1,'terrain_native_resolution_m':5,'boundary_tolerance_m':BOUNDARY_TOL_M,
             'missing_samples_retained_in_tessellation':True,'known_area_never_renormalized_to_full_footprint':True,
             'full_estimate_rule':'Unknown area must be <= max(1e-6 m², valuation area × 1e-9), with some known area. Only numerical roundoff is tolerated.',
             'partition_diagnostics':support_diagnostics,'boundary_counts':dict(boundary_counts),
-            'shared_footprint_overlap_rule':'Lexicographically first classified building ID owns shared slivers; later working valuation cells exclude them. Original output geometry and original area fields remain unchanged.',
+            'shared_footprint_overlap_rule':'Original accepted cohort retains its saved allocation and lexical priority. Newly approved buildings follow in lexical ID order and exclude all previously allocated overlaps. Original output geometry and original area fields remain unchanged.',
             'shared_footprint_overlap_pairs':overlap_pairs,'total_allocated_overlap_removed_m2':sum(removed.values()),
             'original_area_vs_projected_roundtrip_correction':'All weights scaled by original stored footprint area / projected full footprint area, including missing cells. This is a coordinate precision correction, not known-area renormalization.',
             'spatial_approximation':'One saved depth is assigned over its clipped nearest-sample cell. This is 1 m quadrature of a 5 m terrain model, not additional hydraulic/terrain resolution; flood boundaries within a cell are approximate.'},
@@ -534,8 +715,8 @@ def main():
                'boundary_only_positive_depth_buildingids':[r['buildingid'] for r in results if r['jrc_category'] and r[f'exposure_{s}_code']>0 and r[f'damage_{s}_eur2010']==0 and r[f'samples_wet_{s}']>0]}
             for s in SCENARIOS},
         'validation_checks':{'unique_ids_in_all_building_inputs':True,'sample_keys_unique':True,
-            'csv_geojson_depth_inputs_match':True,'all_276_original_geometries_preserved_exactly':True,
-            'same_weights_used_for_both_scenarios':True,'voronoi_area_partition_checks_passed':True,
+            'csv_geojson_depth_inputs_match':True,'original_comparison_cohort_geometries_preserved_exactly':True,
+            'same_saved_weights_used_for_all_scenarios':True,'voronoi_area_partition_checks_passed':True,
             'classified_valuation_areas_have_no_duplicate_shared_area':True,
             'fractions_between_zero_and_one':True,'monetary_values_nonnegative':True,
             'complete_coverage_required_for_full_damage':True,'unclassified_and_excluded_damage_null':True,
@@ -548,8 +729,8 @@ def main():
             'Use saved terrain-relative depths; finished-floor elevations, basements, flood defences, hydraulic connectivity and building vulnerability are unverified.',
             '1 m interior quadrature does not improve the 5 m DEM resolution. Masked sample depths approximate official extent boundaries between sample locations.',
             'Officially exposed buildings can have zero weighted interior reconstructed loss. Where only excluded boundary samples are wet, small flooded edge areas may be missed by interior quadrature; these zero estimates do not verify physical absence of flooding.',
-            'Residential classifications are dominant-landuse proxies, not building occupancy surveys. Three Commercial service-building proxies retain medium confidence.',
-            'Commercial structure-and-standard-contents total is applied to all ten Commercial buildings as explicitly requested, including the museum; this is not a valuation of specialist collections or recreation equipment.',
+            'Residential classifications are dominant-landuse proxies, not building occupancy surveys. User approval does not independently verify building use. Original confidence, conflicting evidence and query gaps remain attached.',
+            f"Commercial structure-and-standard-contents total is applied to the {sum(r['jrc_category']=='Commercial' for r in results)} approved Commercial buildings, including the museum; this is not a valuation of specialist collections or recreation equipment.",
             'Workbook cached formula totals are used unchanged; B117+C117 was verified against D117. Existing workbook depreciation, undamageable-part and contents assumptions are not applied a second time.',
             'Incomplete weighted coverage leaves the full estimate null. Known-area damage components are diagnostic only and excluded from scenario totals for unknown buildings.',
             '2010 euros only. No inflation, depreciation, extra contents factors, uncertainty interval, indirect losses, infrastructure losses or EDDIE integration.',
@@ -566,8 +747,14 @@ def main():
 def create_methodology(v):
     lines=['# Provisional reconstructed-depth building damage estimates for the classified subset','',
         'These are not complete AOI flood losses. All processing is local and source inputs are unchanged. '
-        'The output preserves all 276 original footprints: 184 classified, 32 unresolved in the processed land-use corridor, '
-        'and 60 outside that corridor. The latter 92 have null monetary damage in both scenarios, never imputed zero.', '',
+        f"The combined inventory contains {v['counts']['represented_buildings']} buildings, preserving the original "
+        f"{v['legacy_preservation']['baseline_buildings']}-building comparison cohort. "
+        f"{v['counts']['pending_classification_review']} additional buildings await classification review and have null damages in all scenarios. "
+        'Original HQ10/HQ100 records and sample audits are copied exactly from the verified backup; only HQextreme monetary estimates are newly calculated. '
+        f"{v['classification_approval_extension']['new_user_approved_provisional_count']} additional proposals have explicit user-approved provisional classifications. "
+        'These approvals are not independent occupancy verification: original confidence, OSM/land-use evidence, conflicts and query gaps remain attached. '
+        'Their HQ10/HQ100 amounts remain null with status not_assessed because this approval authorises HQextreme valuation only. '
+        'The immutable input review snapshots describe the historical 184; the active outputs/osm_classification master and append-only decision ledger govern current approvals.', '',
         '## JRC source and units','',
         f'Local workbook: `{WORKBOOK}`. Huizinga, de Moel and Szewczyk (2017), '
         '[Global flood depth-damage functions](https://doi.org/10.2760/16510), EUR 28552 EN. '
@@ -584,7 +771,7 @@ def create_methodology(v):
         'depreciation, undamageable-part/material and content assumptions; none is applied again. '
         'There is no inflation adjustment or multiplication by number of floors. All areas are building footprints in EPSG:2169 metres.', '',
         'The Industrial parameters are extracted and verified for provenance but used for zero buildings. '
-        'Ten buildings use the Commercial total, including the three approved medium-confidence proxies. '
+        f"{v['counts']['accepted_category_counts'].get('Commercial',0)} buildings use the Commercial total, including the retained original proxies and new user-approved provisional proposals. "
         'For the museum this includes ordinary Commercial contents as explicitly requested for this calculation; '
         'it is not an appraisal of specialist collections. The approved classification evidence/limitations remain attached.', '',
         '## Curves and interpolation','',
@@ -607,9 +794,10 @@ def create_methodology(v):
         '3. Build ordered nearest-sample Voronoi cells separately within each footprint part using **all interior '
         'samples, including invalid samples**. Clip each cell to its footprint part. Parts with no interior sample '
         'remain unsupported/unknown. Check the cell union, summed area and footprint area for agreement. '
-        'The same spatial weights are used for HQ10 and HQ100.',
-        '4. Allocate any shared footprint sliver to the lexicographically first classified building ID once; '
-        'remove it only from later working valuation cells. Original footprint geometries and original footprint '
+        'The same saved spatial weights are used for HQ10, HQ100 and HQextreme.',
+        '4. Preserve the original accepted cohort allocation order and saved exact weights. Append new '
+        'approvals in lexical ID order, excluding shared area already owned by the original cohort or earlier new approvals. '
+        'Original footprint geometries and original footprint '
         'areas remain in the output. Record valuation_area_m2 and shared_overlap_removed_from_valuation_m2. '
         f'Total allocated shared area: {v["weighting"]["total_allocated_overlap_removed_m2"]:.12f} m². '
         'Scale all sample weights, including missing cells, by stored original area/projected original area '
@@ -642,15 +830,16 @@ def create_methodology(v):
         'A valid/calculated estimate includes positive and zero damage. Unknown estimates are excluded from '
         'sums, not counted as zero. An empty category (Industrial) has zero buildings and an empty-sum zero; '
         'a nonempty wholly unknown group has a null total. The category rows and total rows overlap and must '
-        'not be added together. HQ10/HQ100 are separate scenarios, not annual expected damage or additive losses. '
+        'not be added together. HQ10/HQ100/HQextreme are separate scenarios, not annual expected damage or additive losses. '
         'Monetary amounts are stored at full calculation precision; displayed cents are rounding only.', '',
         '## Validation and scenario ordering','',
-        'Validation verifies 276 represented IDs, exactly 184 accepted provisional classifications, 174 '
-        'Residential/10 Commercial/0 Industrial, unchanged original geometries, area partitions, one-time '
+        f"Validation verifies the expanded inventory and {v['counts']['accepted_provisional_classifications']} accepted classifications "
+        f"({json.dumps(v['counts']['accepted_category_counts'])}), retaining all original 184 decisions, "
+        'unchanged original geometries, area partitions, one-time '
         'shared-area allocation, fractions within [0,1], nonnegative money, unknown/null handling, no second '
         'structure/content adjustment, source SHA-256 hashes and saved output read-back. Scenario/category '
         'totals equal sums of valid full-building estimates.', '',
-        f'HQ100 < HQ10 full-building damage exceptions: {len(v["scenario_order"]["damage_decrease_exceptions"])}. '
+        f'Adjacent-scenario full-building damage exceptions: {len(v["scenario_order"]["damage_decrease_exceptions"])}. '
         f'Common weighted sample depth decreases: {v["scenario_order"]["common_weighted_sample_depth_decreases"]}; '
         f'WSE decreases: {v["scenario_order"]["common_weighted_sample_wse_decreases"]}. '
         'Detailed per-building comparisons are in damage_validation.json. Where either scenario estimate is '
@@ -665,16 +854,16 @@ def create_methodology(v):
         '## Limitations','']
     lines += ['- '+s for s in v['limitations']]
     lines += ['', '## Output files','',
-        '- `building_flood_damage.geojson` / `.csv`: all 276 original footprints/IDs; raw reconstructed depth '
+        '- `building_flood_damage.geojson` / `.csv`: all expanded footprints/IDs and the original comparison cohort; raw reconstructed depth '
         'summaries; current categories, evidence/confidence; per-scenario fractions, euro estimates, coverage and flags.',
         '- `damage_summary.csv`: known-estimate scenario sums and category/scope counts, including positive, zero and unknown counts.',
         '- `damage_validation.json`: input hashes, workbook provenance, coverage partitions, order checks, assumptions and validation.',
         '- `jrc_parameters.json`: exact workbook totals, component values, curve knots and source cells.',
         '- `sample_damage_weights.csv.gz`: classified-building interior samples only, positive/zero/missing depths, '
-        'area weights, scenario WSE, per-sample fractions and damage contributions. Boundary-only samples are absent.',
+        'area weights, scenario WSE, per-sample fractions and damage contributions. New approvals have HQextreme audit rows only. Boundary-only samples are absent.',
         'Calculation command: `python -B -m flood_costs.damage_calculation`; refuses to overwrite existing monetary products.', '',
         'Null encoding: empty CSV fields, JSON null in GeoJSON/JSON. `damage_hq10_eur2010` and '
-        '`damage_hq100_eur2010` are the full-building estimate fields; '
+        '`damage_hq100_eur2010` and `damage_hqextreme_eur2010` are the full-building estimate fields; '
         '`damage_*_known_area_damage_component_eur2010` is an observed-area diagnostic only. '
         'Keep original OpenStreetMap evidence attribution: © OpenStreetMap contributors, ODbL; '
         'https://www.openstreetmap.org/copyright .', '']

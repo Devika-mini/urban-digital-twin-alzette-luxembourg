@@ -59,7 +59,7 @@ discovered = {name for _, name, _ in pkgutil.iter_modules([sys.argv[1]]) if name
 assert discovered == {'eddie_flood_costs'}
 for name in ('flood_costs', 'eddie_flood_costs'):
     package = importlib.import_module(name)
-    assert package.__version__ == '0.2.0'
+    assert package.__version__ == '0.3.0'
     importlib.import_module(name + '.tasks')
     importlib.import_module(name + '.cost_lookup')
     importlib.import_module(name + '.popup_context')

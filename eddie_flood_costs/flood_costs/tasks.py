@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 RUNS_DIR = Path(os.environ.get("FLOOD_COSTS_RUNS_DIR", "/app/data/flood_costs/runs"))
-DEPTHS_TABLE = "flood_depth_buildings"     # one row per building: HQ10/HQ100 depths, footprint in EPSG:2169
+DEPTHS_TABLE = "flood_depth_buildings"     # one row per building: HQ10/HQ100/HQextreme depths, footprint in EPSG:2169
 BUILDINGS_TABLE = "flood_cost_buildings"   # one row per building, footprint in EPSG:2169
 SUMMARY_TABLE = "flood_cost_summary"       # damage_summary.csv
 LOOKUP_TABLE = "flood_cost_lookup"         # the validated lookup the API serves (blueprint.py)
@@ -32,6 +32,20 @@ def _use_run(run_id: str):
     os.environ["FLOOD_COSTS_OUTPUT_ROOT"] = str(RUNS_DIR / run_id)
     from . import WorkflowPaths  # pylint: disable=import-outside-toplevel
     return WorkflowPaths()
+
+
+def _check_publish_schema(engine, table, frame):
+    """Read-only preflight: require an explicit migration rather than replace old tables."""
+    import sqlalchemy as sa
+    with engine.connect() as connection:
+        inspector = sa.inspect(connection)
+        if not inspector.has_table(table):
+            return
+        columns = {column["name"] for column in inspector.get_columns(table)}
+        missing = set(frame.columns) - columns
+        if "reach_id" not in columns or missing:
+            raise RuntimeError("Explicit flood-cost table migration required before publishing " + table +
+                               "; missing columns: " + ", ".join(sorted(missing)))
 
 
 if importlib.util.find_spec("eddie") is not None:
@@ -46,7 +60,7 @@ if importlib.util.find_spec("eddie") is not None:
 
     @app.task(name="eddie_flood_costs.tasks.run_depth_reconstruction")
     def run_depth_reconstruction(run_id: str | None = None) -> dict:
-        """Step 1: reconstructed HQ10/HQ100 depths per building; returns the run_id for the next steps."""
+        """Step 1: reconstructed HQ10/HQ100/HQextreme depths per building; returns the run_id for the next steps."""
         # pylint: disable=import-outside-toplevel
         from eddie.digitaltwin import setup_environment
 
@@ -70,6 +84,7 @@ if importlib.util.find_spec("eddie") is not None:
         source = _use_run(run_id).stage_path("depth") / "building_reconstructed_depths.geojson"
         buildings = gpd.read_file(source).to_crs(2169).assign(run_id=run_id)
         engine = setup_environment.get_database()
+        _check_publish_schema(engine, DEPTHS_TABLE, buildings)
         write_derived(engine, DEPTHS_TABLE, buildings, _frozen_scope())
         return {"run_id": run_id, "table": DEPTHS_TABLE, "layer": publish_view(engine, DEPTHS_TABLE),
                 "buildings": len(buildings)}
@@ -106,6 +121,7 @@ if importlib.util.find_spec("eddie") is not None:
                                 "loaded_utc": datetime.now(timezone.utc).isoformat(),
                                 "lookup": json.dumps(document)}])
         engine = setup_environment.get_database()
+        _check_publish_schema(engine, BUILDINGS_TABLE, buildings)
         write_derived(engine, BUILDINGS_TABLE, buildings, _frozen_scope())
         with transactional(engine).begin() as conn:
             summary.to_sql(SUMMARY_TABLE, conn, if_exists="replace", index=False)

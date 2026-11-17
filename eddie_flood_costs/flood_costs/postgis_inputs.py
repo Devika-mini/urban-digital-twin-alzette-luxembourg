@@ -13,7 +13,8 @@ from .depth_reconstruction import crop_around_markers
 
 MARKER_TABLES = {"Kilometrierung primäre Gewässer": "base_river_km_primary",
                  "Kilometrierung sekundäre Gewässer": "base_river_km_secondary"}
-EXTENT_TABLES = {"hq10": "base_flood_extent_hq10", "hq100": "base_flood_extent_hq100"}
+EXTENT_TABLES = {"hq10": "base_flood_extent_hq10", "hq100": "base_flood_extent_hq100",
+                 "hqextreme": "base_flood_extent_hqextreme"}
 BUILDINGS_TABLE = "base_buildings_act"
 
 

@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 import shutil
+from collections import Counter
 
 from flood_costs import WorkflowPaths, refuse_overwrite
 
@@ -17,6 +18,10 @@ REVIEW_FILES=('classification_review_decisions.json','building_jrc_osm_classific
     'provisionally_classified_buildings.csv','provisional_category_exposure_summary.csv',
     'classification_summary.json','classification_report.md')
 
+
+def validate_active_inventory(paths=None):
+    from flood_costs.damage_calculation import validate_active_inventory as validate
+    return validate(paths)
 
 def read_csv(path):
     with path.open(newline='',encoding='utf-8') as f: return list(csv.DictReader(f))
@@ -81,9 +86,10 @@ def main(check_only=False):
             row['classification_status']=row['pre_review_classification_status']
             candidates.append(row)
     else: candidates=read_csv(candidate_path)
+    depths = read_csv((paths.baseline_path('depth') if paths.baseline_root else stage_path('depth'))/'building_reconstructed_depths.csv')
     result=validate_review(candidates,reviewed,read_csv(snapshot/'provisionally_classified_buildings.csv'),
         json.loads((snapshot/'classification_review_decisions.json').read_text()),
-        read_csv(stage_path('depth')/'building_reconstructed_depths.csv'),
+        depths,
         json.loads(input_path('classification_manifest').read_text()))
     if not check_only:
         paths.guard_output(out)
@@ -93,7 +99,9 @@ def main(check_only=False):
             src=snapshot/name; dst=out/name
             shutil.copy2(src,dst)
             assert hashlib.sha256(src.read_bytes()).digest()==hashlib.sha256(dst.read_bytes()).digest()
-    print(json.dumps({'mode':'check_only' if check_only else 'replayed_frozen_review',**result},indent=2))
+    active = validate_active_inventory(paths) if check_only and paths.baseline_root else {}
+    print(json.dumps({'mode':'check_only' if check_only else 'replayed_frozen_review',
+                      'historical_frozen_review':result, **active},indent=2))
 
 
 if __name__=='__main__':

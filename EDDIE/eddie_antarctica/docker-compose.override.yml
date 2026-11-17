@@ -19,7 +19,12 @@ services:
       - ../../eddie_base_data/eddie_base_data:/venv/lib/python3.11/site-packages/eddie_base_data:ro
       - ../../eddie_building_population/eddie_building_population:/venv/lib/python3.11/site-packages/eddie_building_population:ro
       - ../../eddie_flood_costs/flood_costs:/venv/lib/python3.11/site-packages/eddie_flood_costs:ro
+      # Validated immutable lookup/context releases; the API never writes here.
+      - ../../data/flood_costs:/app/data/flood_costs:ro
     environment:
+      # Empty paths preserve the existing database lookup fallback.
+      - FLOOD_COSTS_LOOKUP_PATH=${FLOOD_COSTS_LOOKUP_PATH:-}
+      - FLOOD_COSTS_DETAILS_PATH=${FLOOD_COSTS_DETAILS_PATH:-}
       - DATA_SOURCES_DIR=/app/data_sources
       - RIVER_KILOMETRAGE_GPKG=/app/data/river_kilometers/kilometrage-des-cours-deau.gpkg
       # Must equal the --height-offset given to scripts/prepare_dem.py
@@ -113,7 +118,9 @@ services:
       - FLOOD_COSTS_INPUT_DEM=/app/data/terrain/dem_merged.tif
       - FLOOD_COSTS_INPUT_JRC_WORKBOOK=/app/src/static/geo/copy_of_global_flood_depth-damage_functions__30102017.xlsx
       # Devika's human-reviewed OSM classifications (not recomputed here)
-      - FLOOD_COSTS_STAGE_OSM=/app/src/static/geo
+      - FLOOD_COSTS_STAGE_OSM=${FLOOD_COSTS_STAGE_OSM:-/app/src/static/geo}
+      # Verified external baseline is required for the HQextreme comparison workflow.
+      - FLOOD_COSTS_BASELINE_ROOT=${FLOOD_COSTS_BASELINE_ROOT:-}
 
   celery_beat:
     volumes:

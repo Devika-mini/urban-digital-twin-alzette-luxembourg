@@ -95,7 +95,7 @@ def _load_popup_details(path: str, mtime_ns: int, size: int) -> PopupDetails:
 
 @blueprint.route("/popup/<buildingid>.json", methods=["GET"])
 def building_popup(buildingid):
-    """Both precomputed scenarios for one original ID; no geometry or totals.
+    """Available precomputed scenarios for one original ID; no geometry or totals.
 
     Optional context is read from the original monetary GeoJSON, never generated
     here. The existing scenario and summary endpoint contracts stay unchanged.

@@ -1,6 +1,7 @@
 """Synthetic sample/cell checks and a two-building reconstruction run."""
 import csv
 import gzip
+import hashlib
 import json
 
 import geopandas as gpd
@@ -76,7 +77,7 @@ def test_reconstructs_both_scenarios_with_official_mask_and_nulls(tmp_path, monk
     cells = gpd.GeoDataFrame({"chainage_m": [35000]}, geometry=[study], crs=2169)
     namespace["study_area"] = lambda: study
     namespace["water_cells"] = lambda *args: cells.copy()
-    namespace["scenario_wse"] = lambda scenario: {35000: {"hq10": 101., "hq100": 102.}[scenario]}
+    namespace["scenario_wse"] = lambda scenario: {35000: {"hq10": 101., "hq100": 102., "hqextreme": 103.}[scenario]}
     monkeypatch.setattr(depth, "load_reference_functions", lambda: (namespace, hashes))
     monkeypatch.setattr(depth.gpd, "read_file",
                         lambda path, **kwargs: markers.copy() if path == depth.MARKERS_PATH else footprints.copy())
@@ -85,7 +86,7 @@ def test_reconstructs_both_scenarios_with_official_mask_and_nulls(tmp_path, monk
     # HQ100 covers both whole buildings. Use the real extent loader on tiny JSON.
     extents = {"hq10": shapely.union_all([
         shapely.box(origin_x - 1, origin_y - 1, origin_x + 1, origin_y + 3),
-        shapely.box(origin_x + 3, origin_y - 1, origin_x + 7, origin_y + 3)]), "hq100": study}
+        shapely.box(origin_x + 3, origin_y - 1, origin_x + 7, origin_y + 3)]), "hq100": study, "hqextreme": study}
     for scenario, geometry in extents.items():
         path = depth.HAZARD_PATHS[scenario]
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -115,7 +116,7 @@ def test_reconstructs_both_scenarios_with_official_mask_and_nulls(tmp_path, monk
     features = json.loads(depth.PRODUCTS[0].read_text())["features"]
     by_id = {f["properties"]["buildingid"]: f["properties"] for f in features}
     known, missing = by_id["ACT_KNOWN"], by_id["ACT_MISSING"]
-    for scenario, expected in (("hq10", 1.), ("hq100", 2.)):
+    for scenario, expected in (("hq10", 1.), ("hq100", 2.), ("hqextreme", 3.)):
         assert known[f"depth_{scenario}_min_m"] == known[f"depth_{scenario}_max_m"] == expected
         assert missing[f"depth_{scenario}_all_valid_mean_m"] is None
         assert missing[f"samples_valid_{scenario}"] == 0
@@ -123,8 +124,42 @@ def test_reconstructs_both_scenarios_with_official_mask_and_nulls(tmp_path, monk
     assert known["wet_sample_fraction_hq100"] == 1
     with gzip.open(depth.PRODUCTS[2], "rt") as handle:
         samples = list(csv.DictReader(handle))
-    assert {r["scenario"] for r in samples} == {"hq10", "hq100"}
+    assert {r["scenario"] for r in samples} == {"hq10", "hq100", "hqextreme"}
     assert any(r["official_masked_depth_m"] == "0.0" for r in samples if r["buildingid"] == "ACT_KNOWN")
     assert all(r["official_masked_depth_m"] == "" for r in samples if r["buildingid"] == "ACT_MISSING")
     assert all(r["official_extent_contains_sample"] == "True" for r in samples
                if r["official_masked_depth_m"] not in ("", "0.0"))
+
+    # A comparison extension must reuse old evidence even if new DEM/WSE
+    # observations differ. Construct a two-scenario baseline from this toy run.
+    baseline = tmp_path / "baseline"
+    baseline_depth = baseline / "outputs/depth_reconstruction"
+    baseline_depth.mkdir(parents=True)
+    legacy_features = json.loads(depth.PRODUCTS[0].read_text())
+    for feature in legacy_features["features"]:
+        feature["properties"] = {k: v for k, v in feature["properties"].items()
+                                 if "hqextreme" not in k and k not in
+                                 ("comparison_cohort", "classification_review_required")}
+    (baseline_depth / depth.PRODUCTS[0].name).write_text(json.dumps(legacy_features))
+    (baseline_depth / "validation_report.json").write_text(depth.PRODUCTS[3].read_text())
+    legacy_samples = [r for r in samples if r["scenario"] != "hqextreme"]
+    with gzip.open(baseline_depth / "building_depth_samples.csv.gz", "wt", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(samples[0]))
+        writer.writeheader()
+        writer.writerows(legacy_samples)
+    frozen = {str(p.relative_to(baseline)): {"sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
+              for p in baseline_depth.iterdir()}
+    (baseline / "manifest.json").write_text(json.dumps({"files": frozen}))
+    monkeypatch.setenv("FLOOD_COSTS_BASELINE_ROOT", str(baseline))
+    monkeypatch.setenv("FLOOD_COSTS_OUTPUT_ROOT", str(tmp_path / "extension"))
+    namespace["scenario_wse"] = lambda scenario: {35000: 110.}
+    monkeypatch.setattr(SyntheticDEM, "values", lambda self, points: np.full(len(points), 99.))
+    depth.main()
+    extended = json.loads(depth.PRODUCTS[0].read_text())["features"]
+    for original, result in zip(legacy_features["features"], extended):
+        assert original["geometry"] == result["geometry"]
+        assert all(result["properties"][k] == v for k, v in original["properties"].items())
+    assert extended[0]["properties"]["depth_hqextreme_mean_m"] == 10.
+    with gzip.open(depth.PRODUCTS[2], "rt") as handle:
+        reused = [r for r in csv.DictReader(handle) if r["scenario"] != "hqextreme"]
+    assert reused == legacy_samples

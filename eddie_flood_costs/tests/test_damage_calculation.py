@@ -5,7 +5,7 @@ import pytest
 import shapely
 
 from flood_costs import damage_calculation as damage
-from flood_costs.cost_lookup import CostLookup, SCHEMA_VERSION, _totals
+from flood_costs.cost_lookup import CostLookup, LEGACY_SCHEMA_VERSION as SCHEMA_VERSION, _totals
 
 
 def test_jrc_knots_interpolation_and_above_curve_saturation(jrc_parameter):

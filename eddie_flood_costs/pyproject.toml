@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "eddie_flood_costs"
-version = "0.2.0"
+version = "0.3.0"
 description = "Provisional Alzette flood-depth reconstruction, JRC damages and read-only cost API"
 readme = "README.md"
 requires-python = ">=3.11"

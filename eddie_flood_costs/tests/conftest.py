@@ -27,11 +27,12 @@ def _write_csv(path, rows):
 @pytest.fixture
 def source_results_writer():
     def write_source_results(directory, buildings):
+        scenarios = ("hq10", "hq100", "hqextreme") if "hqextreme" in next(iter(buildings.values())) else ("hq10", "hq100")
         rows = []
         for bid, record in buildings.items():
-            row = {"buildingid": bid, **{k: v for k, v in record.items() if k not in ("hq10", "hq100")},
+            row = {"buildingid": bid, **{k: v for k, v in record.items() if k not in scenarios},
                    "damage_price_year": 2010, "damage_currency": "EUR", "damage_estimates_provisional": True}
-            for scenario in ("hq10", "hq100"):
+            for scenario in scenarios:
                 cost = record[scenario]
                 row.update({f"damage_{scenario}_eur2010": cost["damage_eur2010"],
                             f"damage_{scenario}_status": cost["status"],
@@ -51,8 +52,11 @@ def source_results_writer():
         groups = {"Classified total": accepted, **category_groups,
                   "Unresolved in corridor": unresolved, "Excluded outside corridor": excluded,
                   "All buildings": records}
+        pending = [r for r in records if r["classification_scope"] == "pending_classification_review"]
+        if "hqextreme" in scenarios:
+            groups["Pending classification review"] = pending
         summaries = []
-        for scenario in ("hq10", "hq100"):
+        for scenario in scenarios:
             for name, group in groups.items():
                 known = [r[scenario]["damage_eur2010"] for r in group
                          if r[scenario]["damage_eur2010"] is not None]
@@ -70,6 +74,7 @@ def source_results_writer():
             "counts": {"represented_buildings": len(records),
                        "accepted_provisional_classifications": len(accepted),
                        "unresolved_in_corridor": len(unresolved), "outside_corridor_excluded": len(excluded),
+                       **({"pending_classification_review": len(pending)} if "hqextreme" in scenarios else {}),
                        "accepted_category_counts": {c: len(group) for c, group in category_groups.items() if group}},
         }))
 
